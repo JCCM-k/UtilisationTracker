@@ -6,7 +6,8 @@ from excel_parser import ExcelTableExtractor
 import pandas as pd
 
 app = Flask(__name__)
-db_manager = AzureSQLDBManager()
+db_manager = ''
+#db_manager = AzureSQLDBManager('','')
 
 # ===== PAGE ROUTES =====
 @app.route('/')

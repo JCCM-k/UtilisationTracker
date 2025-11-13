@@ -1,3 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Data - HCM Utilization{% endblock %}
+
+{% block extra_css %}
+<style>
+    .upload-zone {
+        transition: all 0.3s;
+        background-color: #f8f9fa;
+        min-height: 200px;
+    }
+    
+    .upload-zone:hover {
+        background-color: #e9ecef;
+    }
+    
+    .upload-zone.border-primary {
+        border-color: #0d6efd !important;
+        background-color: #cfe2ff;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
 <div class="container mt-4">
   <div class="row">
     <div class="col-md-8 mx-auto">
@@ -78,3 +102,8 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+{% endblock %}
