@@ -1,0 +1,155 @@
+<div class="container-fluid mt-4">
+  
+  <!-- Project Selector -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <div class="row align-items-end">
+        <div class="col-md-6">
+          <label class="form-label">Select Project to Edit</label>
+          <select class="form-select" id="projectSelector">
+            <option value="">-- Choose a project --</option>
+            <!-- Dynamically populated -->
+          </select>
+        </div>
+        <div class="col-md-3">
+          <button class="btn btn-primary" onclick="loadProjectData()">
+            <i class="bi bi-download"></i> Load Project Data
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Edit Form (hidden until project loaded) -->
+  <div id="editForm" class="d-none">
+    
+    <!-- Project Details -->
+    <div class="card mb-4">
+      <div class="card-header bg-primary text-white">
+        <h5>Project Details</h5>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-4">
+            <label class="form-label">Customer Name</label>
+            <input type="text" class="form-control" id="edit-customerName">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Project Name</label>
+            <input type="text" class="form-control" id="edit-projectName">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Start Date</label>
+            <input type="date" class="form-control" id="edit-startDate">
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Cost Analysis Table -->
+    <div class="card mb-4">
+      <div class="card-header bg-secondary text-white">
+        <h5>Cost Analysis by Step</h5>
+      </div>
+      <div class="card-body">
+        <table class="table table-bordered table-hover" id="costTable">
+          <thead class="table-light">
+            <tr>
+              <th>Payment Milestone</th>
+              <th>Weight (%)</th>
+              <th>Cost ($)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Dynamically populated with contenteditable cells -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <!-- Hours Analysis Table -->
+    <div class="card mb-4">
+      <div class="card-header bg-info text-white">
+        <h5>Hours Analysis by Module</h5>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-bordered table-sm" id="hoursTable">
+            <thead class="table-light">
+              <tr>
+                <th>HCM Module</th>
+                <th>Weight</th>
+                <th>P+M</th>
+                <th>Plan</th>
+                <th>A+C</th>
+                <th>Testing</th>
+                <th>Deploy</th>
+                <th>Post Go Live</th>
+                <th>Total Weeks/Hours</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Dynamically populated with contenteditable cells -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Timeline Table -->
+    <div class="card mb-4">
+      <div class="card-header bg-success text-white">
+        <h5>Project Timeline</h5>
+      </div>
+      <div class="card-body">
+        <table class="table table-bordered" id="timelineTable">
+          <thead class="table-light">
+            <tr>
+              <th>Phase</th>
+              <th>Duration (Weeks)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <!-- Rate Calculation Table -->
+    <div class="card mb-4">
+      <div class="card-header bg-warning">
+        <h5>Rate Calculation</h5>
+      </div>
+      <div class="card-body">
+        <table class="table table-bordered" id="rateTable">
+          <thead class="table-light">
+            <tr>
+              <th>Module</th>
+              <th>Hours</th>
+              <th>Hourly Rate ($)</th>
+              <th>Total Cost ($)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <!-- Action Buttons -->
+    <div class="card">
+      <div class="card-body text-end">
+        <button class="btn btn-lg btn-secondary me-2" onclick="cancelEdit()">
+          Cancel
+        </button>
+        <button class="btn btn-lg btn-success" onclick="saveAllChanges()">
+          <i class="bi bi-save"></i> Save All Changes
+        </button>
+      </div>
+    </div>
+    
+  </div>
+  
+</div>

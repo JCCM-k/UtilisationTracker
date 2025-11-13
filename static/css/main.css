@@ -1,0 +1,116 @@
+/* Color Scheme */
+:root {
+    --primary-color: #0d6efd;
+    --secondary-color: #6c757d;
+    --success-color: #198754;
+    --warning-color: #ffc107;
+    --danger-color: #dc3545;
+    
+    --phase-pm: #FF6B6B;
+    --phase-plan: #4ECDC4;
+    --phase-ac: #45B7D1;
+    --phase-testing: #FFA07A;
+    --phase-deploy: #98D8C8;
+    --phase-postgo: #A8E6CF;
+}
+
+/* Layout */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fa;
+}
+
+main {
+    min-height: calc(100vh - 60px);
+    padding: 20px;
+}
+
+/* Cards */
+.card {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border: none;
+    margin-bottom: 20px;
+}
+
+.card-header {
+    font-weight: 600;
+    border-bottom: 2px solid rgba(0,0,0,0.1);
+}
+
+/* Metrics Cards */
+.metric-card {
+    transition: transform 0.2s;
+}
+
+.metric-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+/* Timeline Canvas */
+#timelineCanvas {
+    cursor: pointer;
+    width: 100%;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+}
+
+/* Tables */
+table td[contenteditable="true"] {
+    background-color: #fff3cd;
+    cursor: text;
+}
+
+table td[contenteditable="true"]:hover {
+    background-color: #ffe69c;
+}
+
+table td[contenteditable="true"]:focus {
+    outline: 2px solid var(--primary-color);
+    background-color: #fff;
+}
+
+/* Upload Zone */
+.upload-zone {
+    transition: all 0.3s;
+    background-color: #f8f9fa;
+}
+
+.upload-zone:hover {
+    background-color: #e9ecef;
+}
+
+.upload-zone.border-primary {
+    border-color: var(--primary-color) !important;
+    background-color: #cfe2ff;
+}
+
+/* Progress Bar */
+.progress {
+    height: 30px;
+    font-size: 16px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .card-body {
+        padding: 15px;
+    }
+    
+    table {
+        font-size: 14px;
+    }
+}
+
+/* Utilization indicators */
+.utilization-low {
+    background-color: #d1e7dd;
+}
+
+.utilization-medium {
+    background-color: #fff3cd;
+}
+
+.utilization-high {
+    background-color: #f8d7da;
+}
