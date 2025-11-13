@@ -173,7 +173,8 @@ class AzureSQLDBManager:
         max_overflow: int = 5,
         pool_timeout: int = 30,
         log_level: str = 'INFO',
-        authentication_method: str = 'ActiveDirectoryInteractive'
+        authentication_method: str = 'ActiveDirectoryInteractive',
+        auto_initialize_phases: bool = False
     ):
         """
         Initialize Azure SQL Database Manager with connection pooling.
@@ -206,6 +207,13 @@ class AzureSQLDBManager:
         
         # Test initial connection
         self._test_connection()
+
+        if auto_initialize_phases:
+            try:
+                self.initialize_phases()
+            except Exception as e:
+                self.logger.warning(f"Phase auto-initialization skipped: {e}")
+
         self._logger.info("Database manager initialized successfully")
     
     def _setup_logging(self, log_level: str) -> None:
@@ -602,6 +610,46 @@ class AzureSQLDBManager:
     
     # ==================== INTERNAL HELPER METHODS ====================
     
+    def _unpivot_hours_data(self, df: pd.DataFrame, project_id: int) -> pd.DataFrame:
+        """
+        Transform wide format (Plan, Plan_1, A+C, A+C_1) to narrow format.
+        
+        Returns DataFrame with columns:
+        [project_id, hcm_module, module_weight, phase_code, week_number, planned_hours]
+        """
+        records = []
+        
+        for _, row in df.iterrows():
+            module = row['HCM Modules']
+            weight = row.get('Weight')
+            
+            # Group columns by phase
+            for col in df.columns:
+                if col in ['HCM Modules', 'Weight', 'Weeks/Hours']:
+                    continue
+                    
+                # Parse column name: "Plan" or "Plan_1" or "A+C_2"
+                base_phase = col.split('_')[0]  # "Plan", "A+C"
+                week_num = 1 if '_' not in col else int(col.split('_')[1]) + 1
+                
+                hours = self._safe_float(row.get(col))
+                if hours is not None:
+                    records.append({
+                        'project_id': project_id,
+                        'hcm_module': module,
+                        'module_weight': weight,
+                        'phase_code': base_phase,
+                        'week_number': week_num,
+                        'planned_hours': hours
+                    })
+        
+        return pd.DataFrame(records)
+
+    def _get_phase_mapping(self, cursor: pyodbc.Cursor) -> Dict[str, int]:
+        """Get phase_code -> phase_id mapping"""
+        cursor.execute("SELECT phase_code, phase_id FROM dim_phases")
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
     def _bulk_insert_cost_analysis_internal(
         self, 
         cursor: pyodbc.Cursor, 
@@ -628,43 +676,42 @@ class AzureSQLDBManager:
         return len(records)
     
     def _bulk_insert_hours_analysis_internal(
-        self, 
-        cursor: pyodbc.Cursor, 
-        project_id: int, 
+        self,
+        cursor: pyodbc.Cursor,
+        project_id: int,
         df: pd.DataFrame
     ) -> int:
-        """Internal method for hours analysis insertion using existing cursor"""
+        """Insert hours in normalized format with phase/week breakdown"""
+        
+        # Step 1: Unpivot wide format to narrow
+        df_narrow = self._unpivot_hours_data(df, project_id)
+        
+        # Step 2: Lookup phase_ids from dim_phases
+        phase_map = self._get_phase_mapping(cursor)  # {code: id}
+        
+        # Step 3: Build insert records
         query = """
-        INSERT INTO fact_hours_analysis_by_module 
-        (project_id, hcm_module, weight, pm_hours, plan_hours, ac_hours, 
-         testing_hours, deploy_hours, post_go_live_hours, total_weeks_hours)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO fact_module_phase_hours
+            (project_id, hcm_module, module_weight, phase_id, week_number, planned_hours)
+            VALUES (?, ?, ?, ?, ?, ?)
         """
         
-        # Skip header rows (Start Date, Weeks Effort) and summary rows (Sums)
-        df_clean = df[
-            ~df['HCM Modules'].str.upper().isin(['START DATE', 'WEEKS EFFORT', 'SUMS'])
-        ].copy()
-        
-        records = []
-        for _, row in df_clean.iterrows():
-            records.append((
-                project_id,
-                row['HCM Modules'],
-                row['Weight'] if pd.notna(row['Weight']) else None,
-                self._safe_float(row.get('P+M')),
-                self._safe_float(row.get('Plan')),
-                self._safe_float(row.get('A+C')),
-                self._safe_float(row.get('Testing')),
-                self._safe_float(row.get('Deploy')),
-                self._safe_float(row.get('Post Go Live')),
-                self._safe_float(row.get('Weeks/Hours'))
-            ))
+        records = [
+            (
+                row['project_id'],
+                row['hcm_module'],
+                row['module_weight'],
+                phase_map.get(row['phase_code']),  # Convert code to ID
+                row['week_number'],
+                row['planned_hours']
+            )
+            for _, row in df_narrow.iterrows()
+        ]
         
         cursor.fast_executemany = True
         cursor.executemany(query, records)
         return len(records)
-    
+
     def _bulk_insert_timeline_internal(
         self, 
         cursor: pyodbc.Cursor, 
@@ -1951,6 +1998,46 @@ class AzureSQLDBManager:
     
     # ==================== UTILITY METHODS ====================
     
+    def initialize_phases(self) -> int:
+        """
+        Initialize dim_phases table with standard project phases.
+        Should be called once during database setup or after schema creation.
+        
+        Returns:
+            Number of phases inserted
+            
+        Raises:
+            DatabaseConnectionError: If insertion fails
+        """
+        phases = [
+            ('P+M', 'Planning & Management', 1),
+            ('Plan', 'Planning', 2),
+            ('A+C', 'Analysis & Configuration', 3),
+            ('Testing', 'Testing', 4),
+            ('Deploy', 'Deployment', 5),
+            ('Post Go Live', 'Post Go Live Support', 6)
+        ]
+        
+        query = """
+            INSERT INTO dim_phases (phase_code, phase_name, default_sequence)
+            VALUES (?, ?, ?)
+        """
+        
+        with self._connection_context() as conn:
+            try:
+                cursor = conn.cursor()
+                cursor.fast_executemany = True
+                cursor.executemany(query, phases)
+                conn.commit()
+                rows_inserted = len(phases)
+                cursor.close()
+                self.logger.info(f"Initialized {rows_inserted} phases in dim_phases")
+                return rows_inserted
+            except pyodbc.Error as e:
+                conn.rollback()
+                self.logger.exception("Failed to initialize phases")
+                raise DatabaseConnectionError("Phase initialization failed") from e
+            
     def get_connection_pool_stats(self) -> Dict[str, Any]:
         """
         Get current connection pool statistics for monitoring and debugging.
