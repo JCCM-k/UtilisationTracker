@@ -1,11 +1,13 @@
-/* Color Scheme */
+/* Color Scheme - Bootstrap-compatible with Tailwind theme matching */
 :root {
-    --primary-color: #0d6efd;
-    --secondary-color: #6c757d;
-    --success-color: #198754;
-    --warning-color: #ffc107;
-    --danger-color: #dc3545;
-    
+    /* Bootstrap structure with Tailwind colors from index.html */
+    --primary-color: #3b82f6;        /* Tailwind blue-500 (matches HTML primary) */
+    --secondary-color: #64748b;      /* Tailwind slate-500 (matches HTML secondary) */
+    --success-color: #10b981;        /* Tailwind emerald-500 (matches HTML success) */
+    --warning-color: #f59e0b;        /* Tailwind amber-500 (matches HTML warning) */
+    --danger-color: #ef4444;         /* Tailwind red-500 (matches HTML danger) */
+
+    /* Phase colors - unchanged */
     --phase-pm: #FF6B6B;
     --phase-plan: #4ECDC4;
     --phase-ac: #45B7D1;
@@ -82,7 +84,7 @@ table td[contenteditable="true"]:focus {
 
 .upload-zone.border-primary {
     border-color: var(--primary-color) !important;
-    background-color: #cfe2ff;
+    background-color: rgba(59, 130, 246, 0.1);  /* Updated to match new primary color */
 }
 
 /* Progress Bar */
@@ -96,7 +98,7 @@ table td[contenteditable="true"]:focus {
     .card-body {
         padding: 15px;
     }
-    
+
     table {
         font-size: 14px;
     }
