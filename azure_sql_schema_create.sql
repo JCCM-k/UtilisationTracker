@@ -1,11 +1,29 @@
+-- Drop views (must drop first because they depend on tables)
+DROP VIEW IF EXISTS vw_module_budget_summary;
+DROP VIEW IF EXISTS vw_concurrent_project_workload;
+DROP VIEW IF EXISTS vw_resource_utilization_by_module;
+DROP VIEW IF EXISTS vw_module_phase_hours_calendar;
+
+-- Drop function
+DROP FUNCTION IF EXISTS dbo.fn_GetWeekDateRange;
+
+-- Drop fact tables (must drop before dimension tables due to foreign keys)
+DROP TABLE IF EXISTS fact_project_timeline;
+DROP TABLE IF EXISTS fact_module_phase_hours;
+DROP TABLE IF EXISTS fact_rate_calculation;
+DROP TABLE IF EXISTS fact_cost_analysis_by_step;
+
+-- Drop dimension tables
+DROP TABLE IF EXISTS dim_phases;
+DROP TABLE IF EXISTS dim_module;
+DROP TABLE IF EXISTS dim_project;
+
+PRINT 'Cleanup complete. Ready to run corrected schema.';
+GO
 
 -- ============================================================================
--- COMPLETE DATABASE SCHEMA CREATION SCRIPT
+-- CORRECTED DATABASE SCHEMA CREATION SCRIPT
 -- For Microsoft Azure SQL Database
--- Project Cost & Hours Tracking System
--- ============================================================================
-
--- Execute this script in order - dependencies are organized correctly
 -- ============================================================================
 
 SET ANSI_NULLS ON
@@ -26,7 +44,7 @@ CREATE TABLE dim_project (
     project_status NVARCHAR(50) NOT NULL DEFAULT 'Draft',
     created_date DATETIME2 DEFAULT GETDATE(),
     modified_date DATETIME2 DEFAULT GETDATE(),
-
+    
     CONSTRAINT chk_project_status CHECK (project_status IN ('Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'))
 );
 
@@ -45,9 +63,9 @@ CREATE TABLE dim_module (
     standard_duration_weeks INT,
     is_active BIT NOT NULL DEFAULT 1,
     created_date DATETIME2 DEFAULT GETDATE(),
-
-    CONSTRAINT chk_default_rate_positive CHECK (default_hourly_rate IS NULL OR default_hourly_rate > 0),
-    CONSTRAINT chk_duration_positive CHECK (standard_duration_weeks IS NULL OR standard_duration_weeks > 0)
+    
+    CONSTRAINT chk_module_rate_positive CHECK (default_hourly_rate IS NULL OR default_hourly_rate > 0),
+    CONSTRAINT chk_module_duration_positive CHECK (standard_duration_weeks IS NULL OR standard_duration_weeks > 0)
 );
 
 CREATE INDEX idx_module_code ON dim_module(module_code);
@@ -88,7 +106,7 @@ CREATE TABLE fact_cost_analysis_by_step (
     weight DECIMAL(5,4) NOT NULL,
     cost DECIMAL(18,4) NOT NULL,
     created_date DATETIME2 DEFAULT GETDATE(),
-
+    
     CONSTRAINT fk_cost_project FOREIGN KEY (project_id) 
         REFERENCES dim_project(project_id) ON DELETE CASCADE,
     CONSTRAINT chk_weight_range CHECK (weight BETWEEN 0 AND 1),
@@ -107,13 +125,13 @@ CREATE TABLE fact_rate_calculation (
     hourly_rate DECIMAL(10,2) NOT NULL,
     total_cost AS (budgeted_hours * hourly_rate) PERSISTED,
     created_date DATETIME2 DEFAULT GETDATE(),
-
+    
     CONSTRAINT fk_rate_project FOREIGN KEY (project_id) 
         REFERENCES dim_project(project_id) ON DELETE CASCADE,
     CONSTRAINT fk_rate_module FOREIGN KEY (module_id) 
         REFERENCES dim_module(module_id),
-    CONSTRAINT chk_hours_positive CHECK (budgeted_hours > 0),
-    CONSTRAINT chk_rate_positive CHECK (hourly_rate > 0),
+    CONSTRAINT chk_budgeted_hours_positive CHECK (budgeted_hours > 0),
+    CONSTRAINT chk_hourly_rate_positive CHECK (hourly_rate > 0),
     CONSTRAINT uq_project_module_rate UNIQUE (project_id, module_id)
 );
 
@@ -132,7 +150,7 @@ CREATE TABLE fact_module_phase_hours (
     planned_hours DECIMAL(10,2) NOT NULL DEFAULT 0,
     module_weight DECIMAL(10,2),
     created_date DATETIME2 DEFAULT GETDATE(),
-
+    
     CONSTRAINT fk_hours_project FOREIGN KEY (project_id) 
         REFERENCES dim_project(project_id) ON DELETE CASCADE,
     CONSTRAINT fk_hours_module FOREIGN KEY (module_id) 
@@ -160,12 +178,12 @@ CREATE TABLE fact_project_timeline (
     start_date DATE,
     end_date DATE,
     created_date DATETIME2 DEFAULT GETDATE(),
-
+    
     CONSTRAINT fk_timeline_project FOREIGN KEY (project_id) 
         REFERENCES dim_project(project_id) ON DELETE CASCADE,
     CONSTRAINT fk_timeline_phase FOREIGN KEY (phase_id) 
         REFERENCES dim_phases(phase_id),
-    CONSTRAINT chk_duration_positive CHECK (duration_weeks > 0),
+    CONSTRAINT chk_timeline_duration_positive CHECK (duration_weeks > 0),
     CONSTRAINT chk_timeline_dates CHECK (end_date IS NULL OR start_date IS NULL OR end_date >= start_date),
     CONSTRAINT uq_project_phase_timeline UNIQUE (project_id, phase_id)
 );
@@ -178,7 +196,6 @@ GO
 -- STEP 3: CREATE UTILITY FUNCTION
 -- ============================================================================
 
--- Function: Convert week number to calendar date range (excluding weekends)
 CREATE FUNCTION dbo.fn_GetWeekDateRange(
     @project_start_date DATE,
     @week_number INT
@@ -211,7 +228,6 @@ GO
 -- STEP 4: CREATE ANALYTICAL VIEWS
 -- ============================================================================
 
--- View 1: Weekly hours with calendar dates
 CREATE VIEW vw_module_phase_hours_calendar AS
 SELECT 
     h.hours_id,
@@ -239,7 +255,6 @@ INNER JOIN dim_phases ph ON h.phase_id = ph.phase_id
 CROSS APPLY dbo.fn_GetWeekDateRange(h.module_start_date, h.week_number) wd;
 GO
 
--- View 2: Total hours across all projects per module (Resource Utilization)
 CREATE VIEW vw_resource_utilization_by_module AS
 SELECT 
     m.module_id,
@@ -259,7 +274,6 @@ CROSS APPLY dbo.fn_GetWeekDateRange(h.module_start_date, h.week_number) wd
 GROUP BY m.module_id, m.module_code, m.module_name, p.project_id, p.project_name, p.project_status;
 GO
 
--- View 3: Concurrent project workload by calendar week
 CREATE VIEW vw_concurrent_project_workload AS
 SELECT 
     calendar_week_start = wd.week_start_date,
@@ -274,7 +288,6 @@ WHERE p.project_status = 'Active'
 GROUP BY wd.week_start_date, wd.week_end_date;
 GO
 
--- View 4: Budget vs Actual comparison per module
 CREATE VIEW vw_module_budget_summary AS
 SELECT 
     p.project_id,
@@ -300,45 +313,6 @@ GROUP BY
     m.module_id, m.module_code, m.module_name,
     r.budgeted_hours, r.hourly_rate, r.total_cost;
 GO
-
--- ============================================================================
--- VERIFICATION QUERIES
--- ============================================================================
-
--- Verify all tables were created
-SELECT 
-    TABLE_SCHEMA,
-    TABLE_NAME,
-    TABLE_TYPE
-FROM INFORMATION_SCHEMA.TABLES
-WHERE TABLE_NAME IN (
-    'dim_project', 
-    'dim_module', 
-    'dim_phases',
-    'fact_cost_analysis_by_step',
-    'fact_rate_calculation',
-    'fact_module_phase_hours',
-    'fact_project_timeline'
-)
-ORDER BY TABLE_NAME;
-GO
-
--- Verify all views were created
-SELECT 
-    TABLE_SCHEMA,
-    TABLE_NAME
-FROM INFORMATION_SCHEMA.VIEWS
-WHERE TABLE_NAME LIKE 'vw_%'
-ORDER BY TABLE_NAME;
-GO
-
--- Verify phase seed data
-SELECT * FROM dim_phases ORDER BY default_sequence;
-GO
-
--- ============================================================================
--- SCHEMA CREATION COMPLETE
--- ============================================================================
 
 PRINT 'Database schema created successfully!';
 PRINT 'Tables created: 7';

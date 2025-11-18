@@ -93,7 +93,6 @@ async function loadDashboardData() {
     showLoading(true);
     
     try {
-        // Load all data in parallel
         const [projects, timelineData] = await Promise.all([
             fetchProjects(),
             fetchTimelineData()
@@ -102,19 +101,17 @@ async function loadDashboardData() {
         allProjects = projects;
         allTimelineData = timelineData;
         
-        // Populate UI components
         populateMetrics(projects);
         populateProjectFilter(projects);
         populateProjectsTable(projects);
         
-        // Initialize timeline
-        if (timelineData && timelineData.projects.length > 0) {
+        // Add null check
+        if (timelineData?.projects?.length > 0) {
             timelineInstance = new ProjectTimeline('timelineCanvas', timelineData);
         } else {
             showNoDataMessage();
         }
         
-        // Load charts
         await loadCharts();
         
         console.log('Dashboard loaded successfully');
@@ -195,7 +192,7 @@ function populateProjectFilter(projects) {
     projects.forEach(project => {
         const option = document.createElement('option');
         option.value = project.projectid;
-        option.textContent = `${project.customername} - ${project.projectname}`;
+        option.textContent = `${project.customerName} - ${project.projectName}`;
         select.appendChild(option);
     });
 }
@@ -218,9 +215,9 @@ function populateProjectsTable(projects) {
     projects.forEach(project => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td>${escapeHtml(project.customername || 'N/A')}</td>
-            <td>${escapeHtml(project.projectname || 'N/A')}</td>
-            <td>${formatDate(project.projectstartdate)}</td>
+            <td>${escapeHtml(project.customerName || 'N/A')}</td>
+            <td>${escapeHtml(project.projectName || 'N/A')}</td>
+            <td>${formatDate(project.projectStartDate)}</td>
             <td><span class="badge bg-primary">${project.moduleCount || 0}</span></td>
             <td>${(project.totalHours || 0).toLocaleString()} hrs</td>
             <td>${getProjectStatus(project)}</td>

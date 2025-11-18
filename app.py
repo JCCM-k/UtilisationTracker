@@ -5,10 +5,21 @@ from db_ops import AzureSQLDBManager
 from excel_parser import ExcelTableExtractor
 import pandas as pd
 import io 
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
-db_manager = ''
-#db_manager = AzureSQLDBManager('','')
+global db_manager
+db_manager = AzureSQLDBManager(
+    server="project-utilisation.database.windows.net",
+    database="Utilisation_tracker_db",
+    username="kliqtek-tester",
+    password="cl@r1tythr0ughkn0wl3dg3",
+    pool_size=5,
+    max_overflow=2,
+    pool_timeout=30,
+    log_level='INFO',
+    authentication_method='SqlPassword'
+)
 
 app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
@@ -16,6 +27,244 @@ app.config['SECRET_KEY'] = 'your-secret-key-here'  # Required for session manage
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+from datetime import datetime, timedelta
+import pandas as pd
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def calculate_week_number(date):
+    """
+    Calculate ISO 8601 week number (1-53).
+    Week 1 contains first Thursday; weeks start Monday.
+    
+    Args:
+        date: datetime or string (YYYY-MM-DD)
+    Returns:
+        int: ISO week number (1-53)
+    """
+    if isinstance(date, str):
+        date = datetime.strptime(date, '%Y-%m-%d')
+    return date.isocalendar()[1]
+
+
+def get_phase_color(phase_code):
+    """
+    Map phase code to hex color matching frontend PHASE_COLORS.
+    
+    Args:
+        phase_code: str (e.g., 'PM', 'Plan', 'AC')
+    Returns:
+        str: Hex color code with # prefix
+    """
+    PHASE_COLOR_MAP = {
+        'PM': '#FF6B6B',
+        'Plan': '#4ECDC4',
+        'AC': '#45B7D1',
+        'Testing': '#FFA07A',
+        'Deploy': '#98D8C8',
+        'Post Go Live': '#A8E6CF'
+    }
+    return PHASE_COLOR_MAP.get(phase_code, '#CCCCCC')
+
+
+def calculate_date_range(df):
+    """
+    Calculate min/max dates from timeline DataFrame with buffer.
+    
+    Args:
+        df: DataFrame with 'projectstartdate', 'startdate', 'enddate' columns
+    Returns:
+        dict: {'minDate': 'YYYY-MM-DD', 'maxDate': 'YYYY-MM-DD'}
+    """
+    if df.empty:
+        today = datetime.now()
+        return {
+            'minDate': today.strftime('%Y-%m-%d'),
+            'maxDate': (today + timedelta(weeks=4)).strftime('%Y-%m-%d')
+        }
+    
+    # Find earliest and latest dates
+    min_date = pd.to_datetime(
+        df[['projectstartdate', 'startdate']].min().min()
+    )
+    max_date = pd.to_datetime(df['enddate'].max())
+    
+    # Add 1-week buffers for visualization padding
+    min_date -= timedelta(weeks=1)
+    max_date += timedelta(weeks=1)
+    
+    return {
+        'minDate': min_date.strftime('%Y-%m-%d'),
+        'maxDate': max_date.strftime('%Y-%m-%d')
+    }
+
+
+def aggregate_hours_by_module(granularity='weekly'):
+    """
+    Aggregate module phase hours by time period.
+    Uses: fact_module_phase_hours, dim_module (lowercase with underscores)
+    
+    Args:
+        granularity: str ('weekly', 'monthly', 'quarterly')
+    Returns:
+        dict: {'periods': ['W1', ...], 'modules': [{'moduleName': 'X', 'hours': [...]}, ...]}
+    """
+    try:
+        # SQL query based on granularity
+        if granularity == 'weekly':
+            period_expr = "DATEPART(WEEK, h.module_start_date)"
+            period_format = "CONCAT('W', DATEPART(WEEK, h.module_start_date))"
+        elif granularity == 'monthly':
+            period_expr = "FORMAT(h.module_start_date, 'yyyy-MM')"
+            period_format = "FORMAT(h.module_start_date, 'yyyy-MM')"
+        else:  # quarterly
+            period_expr = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+            period_format = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+        
+        query = f"""
+        SELECT 
+            m.module_name,
+            {period_format} AS period,
+            SUM(h.planned_hours) AS totalhours
+        FROM fact_module_phase_hours h
+        INNER JOIN dim_module m ON h.module_id = m.module_id
+        WHERE h.module_start_date IS NOT NULL 
+            AND h.planned_hours IS NOT NULL
+        GROUP BY m.module_name, {period_expr}, {period_format}
+        ORDER BY m.module_name, {period_expr}
+        """
+        
+        df = db_manager.execute_custom_query(query)
+        
+        if df.empty:
+            return {'periods': [], 'modules': []}
+        
+        # Transform to chart format
+        periods = sorted(df['period'].unique().tolist())
+        modules = []
+        
+        for module_name in df['module_name'].unique():
+            module_df = df[df['module_name'] == module_name]
+            hours_dict = dict(zip(module_df['period'], module_df['totalhours']))
+            hours = [hours_dict.get(p, 0) for p in periods]
+            
+            modules.append({
+                'moduleName': module_name,
+                'hours': hours
+            })
+        
+        return {'periods': periods, 'modules': modules}
+        
+    except Exception as e:
+        app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}")
+        return {'periods': [], 'modules': []}
+
+
+def aggregate_hours_by_project(granularity='weekly'):
+    """
+    Aggregate hours by project over time.
+    Uses: fact_module_phase_hours, dim_project (lowercase with underscores)
+    
+    Args:
+        granularity: str ('weekly', 'monthly', 'quarterly')
+    Returns:
+        dict: {'periods': ['W1', ...], 'projects': [{'projectName': 'X', 'hours': [...]}, ...]}
+    """
+    try:
+        # SQL query based on granularity
+        if granularity == 'weekly':
+            period_expr = "DATEPART(WEEK, h.module_start_date)"
+            period_format = "CONCAT('W', DATEPART(WEEK, h.module_start_date))"
+        elif granularity == 'monthly':
+            period_expr = "FORMAT(h.module_start_date, 'yyyy-MM')"
+            period_format = "FORMAT(h.module_start_date, 'yyyy-MM')"
+        else:  # quarterly
+            period_expr = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+            period_format = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+        
+        query = f"""
+        SELECT 
+            p.project_name,
+            {period_format} AS period,
+            SUM(h.planned_hours) AS totalhours
+        FROM fact_module_phase_hours h
+        INNER JOIN dim_project p ON h.project_id = p.project_id
+        WHERE h.module_start_date IS NOT NULL 
+            AND h.planned_hours IS NOT NULL
+        GROUP BY p.project_name, {period_expr}, {period_format}
+        ORDER BY p.project_name, {period_expr}
+        """
+        
+        df = db_manager.execute_custom_query(query)
+        
+        if df.empty:
+            return {'periods': [], 'projects': []}
+        
+        # Transform to chart format
+        periods = sorted(df['period'].unique().tolist())
+        projects = []
+        
+        for project_name in df['project_name'].unique():
+            project_df = df[df['project_name'] == project_name]
+            hours_dict = dict(zip(project_df['period'], project_df['totalhours']))
+            hours = [hours_dict.get(p, 0) for p in periods]
+            
+            projects.append({
+                'projectName': project_name,
+                'hours': hours
+            })
+        
+        return {'periods': periods, 'projects': projects}
+        
+    except Exception as e:
+        app.logger.error(f"Error in aggregate_hours_by_project: {str(e)}")
+        return {'periods': [], 'projects': []}
+    
+def get_enriched_projects():
+    """
+    Get all active projects with aggregated module counts and total hours.
+    This version starts from dim_project to ensure all active projects are included.
+    Returns DataFrame with enriched project data for the dashboard.
+    """
+    try:
+        # This query starts from dim_project and LEFT JOINs to get module data,
+        # ensuring that all 'Active' projects are included, even if they have no modules yet.
+        query = """
+        SELECT
+            p.project_id AS "projectId",
+            p.customer_name AS "customerName",
+            p.project_name AS "projectName",
+            p.project_start_date AS "projectStartDate",
+            p.project_status AS "status",
+            COUNT(DISTINCT h.module_id) as "moduleCount",
+            SUM(h.planned_hours) as "totalHours"
+        FROM dim_project p
+        LEFT JOIN fact_module_phase_hours h ON p.project_id = h.project_id
+        WHERE p.project_status = 'Active'
+        GROUP BY p.project_id, p.customer_name, p.project_name, p.project_start_date, p.project_status
+        ORDER BY p.project_start_date DESC
+        """
+        df = db_manager.execute_custom_query(query)
+
+        # SUM(NULL) results in NULL, so we replace it with 0. 
+        # COUNT(DISTINCT NULL) correctly results in 0.
+        df['totalHours'] = df['totalHours'].fillna(0)
+
+        # Format date for consistent JSON output.
+        df['projectStartDate'] = pd.to_datetime(df['projectStartDate']).dt.strftime('%Y-%m-%d')
+
+        return df
+    except Exception as e:
+        app.logger.error(f"Error in get_enriched_projects: {str(e)}")
+        return pd.DataFrame()
+
 
 # ===== PAGE ROUTES =====
 @app.route('/')
@@ -35,45 +284,68 @@ def edit_page():
 
 @app.route('/api/projects')
 def get_projects():
-    """Get all projects for dropdowns and lists"""
-    df = db_manager.get_all_projects()
+    """Get all active projects for the dashboard"""
+    df = get_enriched_projects()
     return jsonify(df.to_dict('records'))
 
 @app.route('/api/project/<int:project_id>')
 def get_project(project_id):
     """Get complete project data for editing"""
-    data = db_manager.get_complete_project_data(project_id)
-    return jsonify({
-        'project': data['project'].to_dict('records')[0] if not data['project'].empty else {},
-        'costanalysis': data['costanalysis'].to_dict('records'),
-        'hoursanalysis': data['hoursanalysis'].to_dict('records'),
-        'timeline': data['timeline'].to_dict('records'),
-        'ratecalculation': data['ratecalculation'].to_dict('records')
-    })
+    try:
+        data = db_manager.get_complete_project_data(project_id)
+        
+        # Convert DataFrames to JSON-compatible format
+        # Replace NaN with None (becomes null in JSON)
+        return jsonify({
+            'success': True,
+            'project': data['project'].fillna('').to_dict('records')[0] if not data['project'].empty else {},
+            'costanalysis': data['costanalysis'].fillna('').to_dict('records'),
+            'hoursanalysis': data['hoursanalysis'].replace({float('nan'): None}).to_dict('records'),  # ← FIXED
+            'timeline': data['timeline'].fillna('').to_dict('records'),
+            'ratecalculation': data['ratecalculation'].replace({float('nan'): None}).to_dict('records')  # ← FIXED
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/timeline-data')
 def get_timeline_data():
-    """Aggregated timeline data for visualization"""
-    # Custom query to aggregate timeline across all projects
-    query = """
-    SELECT 
-        p.projectid,
-        p.customername,
-        p.projectname,
-        p.projectstartdate,
-        t.phase,
-        t.durationweeks,
-        t.startdate,
-        t.enddate
-    FROM dimproject p
-    JOIN factprojecttimeline t ON p.projectid = t.projectid
-    ORDER BY p.projectid, t.startdate
-    """
-    df = db_manager.execute_custom_query(query)
-    
-    # Transform into timeline structure
-    timeline_data = transform_to_timeline_format(df)
-    return jsonify(timeline_data)
+    """Get timeline data for Gantt chart visualization"""
+    try:
+        query = """
+        SELECT
+            p.project_id,
+            p.customer_name,
+            p.project_name,
+            p.project_start_date,
+            ph.phase_name,
+            ph.phase_code,
+            t.duration_weeks,
+            t.start_date,
+            t.end_date
+        FROM dim_project p
+        JOIN fact_project_timeline t ON p.project_id = t.project_id
+        JOIN dim_phases ph ON t.phase_id = ph.phase_id
+        ORDER BY p.project_id, ph.default_sequence
+        """
+        
+        df = db_manager.execute_custom_query(query)
+        
+        # Replace NaN with None for JSON compatibility
+        result = df.where(pd.notna(df), None).to_dict('records')
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        })
+    except Exception as e:
+        app.logger.error(f"Error fetching timeline data: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/module-utilization')
 def get_module_utilization():
@@ -151,11 +423,10 @@ def detect_weekly_conflicts(week_number):
 def update_project(project_id):
     try:
         changes = request.json
-        db_manager = AzureSQLDBManager()
         
         # Update project details
         db_manager.execute_custom_command(
-            "UPDATE dimproject SET customername=?, projectname=?, projectstartdate=? WHERE projectid=?",
+            "UPDATE dimproject SET customer_name=?, project_name=?, project_start_date=? WHERE project_id=?",
             params=(
                 changes['projectDetails']['customername'],
                 changes['projectDetails']['projectname'],
@@ -212,7 +483,6 @@ def upload():
         df_rate = extractor.tables['Rate Calculation']
         
         # Insert into database
-        db_manager = AzureSQLDBManager()
         project_info = {
             'customername': customer_name,
             'projectname': project_name,
@@ -388,14 +658,11 @@ def submit_project():
                 'error': 'One or more required tables are empty'
             }), 400
         
-        # Initialize database manager
-        db_manager = AzureSQLDBManager()  # Add your connection params
-        
         # Prepare project info dictionary
         project_dict = {
-            'customername': customer_name,
-            'projectname': project_name,
-            'projectstartdate': project_start_date
+            'customer_name': customer_name,
+            'project_name': project_name,
+            'project_start_date': project_start_date
         }
         
         # Insert project data into database

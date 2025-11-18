@@ -169,6 +169,8 @@ class AzureSQLDBManager:
         self,
         server: str,
         database: str,
+        username: str = None,
+        password: str = None,
         pool_size: int = 10,
         max_overflow: int = 5,
         pool_timeout: int = 30,
@@ -200,7 +202,9 @@ class AzureSQLDBManager:
         self.max_overflow = max_overflow
         self.pool_timeout = pool_timeout
         self.authentication_method = authentication_method
-        
+        self.username = username
+        self.password = password
+
         # Initialize connection pool
         self._logger.info(f"Initializing connection pool for {server}/{database}")
         self._connection_pool = self._initialize_pool()
@@ -227,20 +231,32 @@ class AzureSQLDBManager:
     
     def _create_connection_string(self) -> str:
         """
-        Build Entra ID authenticated connection string for Azure SQL Database.
-        
-        Returns:
-            Properly formatted connection string with security parameters
+        Build connection string for Azure SQL Database.
+        For SQL authentication (not Entra ID).
         """
-        connection_string = (
-            f"Driver={{ODBC Driver 18 for SQL Server}};"
-            f"Server={self.server};"
-            f"Database={self.database};"
-            f"Authentication={self.authentication_method};"
-            f"Encrypt=yes;"
-            f"TrustServerCertificate=no;"
-            f"Connection Timeout=30;"
-        )
+        # For SQL Password authentication
+        if self.authentication_method == 'SqlPassword':
+            connection_string = (
+                f"Driver={{ODBC Driver 18 for SQL Server}};"
+                f"Server=tcp:{self.server},1433;"
+                f"Database={self.database};"
+                f"Uid={self.username};"
+                f"Pwd={self.password};"
+                f"Encrypt=yes;"
+                f"TrustServerCertificate=yes;"
+                f"Connection Timeout=30;"
+            )
+        else:
+            # Original Entra ID method
+            connection_string = (
+                f"Driver={{ODBC Driver 18 for SQL Server}};"
+                f"Server={self.server};"
+                f"Database={self.database};"
+                f"Authentication={self.authentication_method};"
+                f"Encrypt=yes;"
+                f"TrustServerCertificate=no;"
+                f"Connection Timeout=30;"
+            )
         
         self._logger.debug(f"Connection string created for server: {self.server}")
         return connection_string
@@ -651,28 +667,37 @@ class AzureSQLDBManager:
         return {row[0]: row[1] for row in cursor.fetchall()}
 
     def _bulk_insert_cost_analysis_internal(
-        self, 
-        cursor: pyodbc.Cursor, 
-        project_id: int, 
+        self,
+        cursor: pyodbc.Cursor,
+        project_id: int,
         df: pd.DataFrame
     ) -> int:
-        """Internal method for cost analysis insertion using existing cursor"""
+        """Insert cost analysis by step records"""
+        
         query = """
-        INSERT INTO fact_cost_analysis_by_step 
+        INSERT INTO fact_cost_analysis_by_step
         (project_id, payment_milestone, weight, cost)
         VALUES (?, ?, ?, ?)
         """
         
-        # Filter out summary rows (TOTAL, Sums, etc.)
-        df_clean = df[~df['Payment Milestone'].str.upper().isin(['TOTAL', 'SUMS'])].copy()
+        # Filter out total/summary rows
+        df_clean = df[~df.iloc[:, 0].str.upper().isin(['TOTAL', 'SUMS'])].copy()
         
         records = [
-            (project_id, row['Payment Milestone'], row['Weight'], row['Cost'])
+            (
+                project_id,
+                str(row.iloc[0])[:255],  # ← ADD [:255] to truncate to 255 chars
+                self._safe_float(row.iloc[1], 0.0),
+                self._safe_float(row.iloc[2], 0.0)
+            )
             for _, row in df_clean.iterrows()
+            if pd.notna(row.iloc[0])
         ]
         
-        cursor.fast_executemany = True
-        cursor.executemany(query, records)
+        if records:
+            cursor.fast_executemany = True
+            cursor.executemany(query, records)
+        
         return len(records)
     
     def _bulk_insert_hours_analysis_internal(
@@ -681,101 +706,299 @@ class AzureSQLDBManager:
         project_id: int,
         df: pd.DataFrame
     ) -> int:
-        """Insert hours in normalized format with phase/week breakdown"""
+        """Insert hours in NEW normalized format with module_id and phase_id"""
         
-        # Step 1: Unpivot wide format to narrow
-        df_narrow = self._unpivot_hours_data(df, project_id)
+        # Step 1: Get or create modules in dim_module
+        module_ids = {}
+        module_column = df.columns[0]  # First column should be module names
         
-        # Step 2: Lookup phase_ids from dim_phases
-        phase_map = self._get_phase_mapping(cursor)  # {code: id}
+        for module_name in df[module_column].unique():
+            if pd.notna(module_name) and str(module_name).strip():
+                module_code = str(module_name).strip()[:50]  # Truncate to 50 chars for code
+                module_name_full = str(module_name).strip()[:255]  # Truncate to 255 for name
+                
+                # Check if module exists
+                cursor.execute(
+                    "SELECT module_id FROM dim_module WHERE module_code = ?",
+                    (module_code,)
+                )
+                result = cursor.fetchone()
+                
+                if result:
+                    module_ids[module_code] = result[0]
+                else:
+                    # Insert new module
+                    cursor.execute(
+                        "INSERT INTO dim_module (module_code, module_name) VALUES (?, ?)",
+                        (module_code, module_name_full)
+                    )
+                    cursor.execute("SELECT @@IDENTITY")
+                    module_ids[module_code] = int(cursor.fetchone()[0])
         
-        # Step 3: Build insert records
+        # Step 2: Get phase mappings
+        cursor.execute("SELECT phase_code, phase_id FROM dim_phases")
+        phase_map = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Step 3: Map DataFrame columns to phase codes
+        phase_column_map = {
+            'P+M': 'PM',
+            'P+M': 'PM',
+            'Plan': 'PLAN',
+            'PLAN': 'PLAN',
+            'A+C': 'AC',
+            'AC': 'AC',
+            'Testing': 'TESTING',
+            'TESTING': 'TESTING',
+            'Deploy': 'DEPLOY',
+            'DEPLOY': 'DEPLOY',
+            'Post Go Live': 'POST_GO_LIVE',
+            'POST_GO_LIVE': 'POST_GO_LIVE'
+        }
+        
+        # Step 4: Insert query
         query = """
-            INSERT INTO fact_module_phase_hours
-            (project_id, hcm_module, module_weight, phase_id, week_number, planned_hours)
-            VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO fact_module_phase_hours
+        (project_id, module_id, phase_id, week_number, module_start_date, planned_hours, module_weight)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """
         
-        records = [
-            (
-                row['project_id'],
-                row['hcm_module'],
-                row['module_weight'],
-                phase_map.get(row['phase_code']),  # Convert code to ID
-                row['week_number'],
-                row['planned_hours']
-            )
-            for _, row in df_narrow.iterrows()
-        ]
+        # Step 5: Build records
+        records = []
+        current_date = datetime.now().strftime('%Y-%m-%d')  # Default start date
         
-        cursor.fast_executemany = True
-        cursor.executemany(query, records)
+        for _, row in df.iterrows():
+            module_name = str(row[module_column]).strip()
+            if not module_name or pd.isna(row[module_column]):
+                continue
+                
+            module_code = module_name[:50]
+            module_id = module_ids.get(module_code)
+            
+            if not module_id:
+                continue
+            
+            # Get weight if exists
+            weight = None
+            if 'Weight' in df.columns:
+                weight = self._safe_float(row.get('Weight'))
+            
+            # Process each phase column
+            week_counter = 1
+            for col in df.columns[1:]:  # Skip first column (module name)
+                col_upper = str(col).strip()
+                
+                # Skip non-phase columns
+                if col_upper in ['Weight', 'WEIGHT', 'Total', 'TOTAL']:
+                    continue
+                
+                # Map column to phase code
+                phase_code = phase_column_map.get(col_upper)
+                if not phase_code:
+                    continue
+                
+                phase_id = phase_map.get(phase_code)
+                if not phase_id:
+                    continue
+                
+                # Get hours value
+                hours = self._safe_float(row.get(col), 0.0)
+                
+                # Only insert if hours > 0
+                if hours and hours > 0:
+                    records.append((
+                        project_id,
+                        module_id,
+                        phase_id,
+                        week_counter,
+                        current_date,
+                        hours,
+                        weight
+                    ))
+                    week_counter += 1
+        
+        # Step 6: Execute batch insert
+        if records:
+            cursor.fast_executemany = True
+            cursor.executemany(query, records)
+        
         return len(records)
 
     def _bulk_insert_timeline_internal(
-        self, 
-        cursor: pyodbc.Cursor, 
-        project_id: int, 
+        self,
+        cursor: pyodbc.Cursor,
+        project_id: int,
         df: pd.DataFrame
     ) -> int:
-        """Internal method for timeline insertion using existing cursor"""
+        """Insert timeline with phase_id lookup"""
+        
+        # Guard against empty DataFrame
+        if df.empty:
+            self._logger.warning("Timeline DataFrame is empty, skipping timeline insert")
+            return 0
+        
+        # Get phase mappings from dim_phases
+        cursor.execute("SELECT phase_code, phase_id FROM dim_phases")
+        phase_map = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Also create reverse map with common variations
+        phase_name_map = {
+            'P+M': 'PM',
+            'Project Management': 'PM',
+            'PLAN': 'PLAN',
+            'Plan': 'PLAN',
+            'Planning': 'PLAN',
+            'AC': 'AC',
+            'A+C': 'AC',
+            'Analysis & Configuration': 'AC',
+            'TESTING': 'TESTING',
+            'Testing': 'TESTING',
+            'DEPLOY': 'DEPLOY',
+            'Deploy': 'DEPLOY',
+            'Deployment': 'DEPLOY',
+            'POST_GO_LIVE': 'POST_GO_LIVE',
+            'Post Go Live': 'POST_GO_LIVE',
+            'Post Go-Live Support': 'POST_GO_LIVE'
+        }
+        
         query = """
-        INSERT INTO fact_project_timeline 
-        (project_id, phase, duration_weeks)
+        INSERT INTO fact_project_timeline
+        (project_id, phase_id, duration_weeks)
         VALUES (?, ?, ?)
         """
         
-        # Timeline CSV has unusual structure - data is in second column from row 1 onwards
         records = []
-        for i in range(1, len(df)):
-            phase = df.iloc[i, 0]
-            duration = df.iloc[i, 1]
-            if pd.notna(phase) and pd.notna(duration):
-                records.append((project_id, str(phase), int(duration)))
         
-        cursor.fast_executemany = True
-        cursor.executemany(query, records)
-        return len(records)
+        # Iterate through DataFrame rows
+        for idx, row in df.iterrows():
+            # Skip header row if it exists
+            if idx == 0:
+                first_val = str(row.iloc[0]).strip().lower()
+                if 'phase' in first_val or 'step' in first_val:
+                    continue
+            
+            phase_name = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else None
+            duration = self._safe_float(row.iloc[1]) if len(row) > 1 else None
+            
+            if not phase_name or not duration or duration <= 0:
+                continue
+            
+            # Map phase name to phase_code
+            phase_code = phase_name_map.get(phase_name)
+            if not phase_code:
+                self._logger.warning(f"Unknown phase name: {phase_name}, skipping")
+                continue
+            
+            # Get phase_id
+            phase_id = phase_map.get(phase_code)
+            if not phase_id:
+                self._logger.warning(f"Phase code {phase_code} not found in dim_phases")
+                continue
+            
+            records.append((
+                project_id,
+                phase_id,
+                int(duration)
+            ))
+        
+        # Only execute if we have records
+        if records:
+            cursor.fast_executemany = True
+            cursor.executemany(query, records)
+            return len(records)
+        else:
+            self._logger.warning("No valid timeline records to insert")
+            return 0
     
     def _bulk_insert_rate_calculation_internal(
-        self, 
-        cursor: pyodbc.Cursor, 
-        project_id: int, 
+        self,
+        cursor: pyodbc.Cursor,
+        project_id: int,
         df: pd.DataFrame
     ) -> int:
-        """Internal method for rate calculation insertion using existing cursor"""
+        """Insert rate calculation with module_id lookup"""
+        
+        if df.empty:
+            self._logger.warning("Rate calculation DataFrame is empty")
+            return 0
+        
+        # Get or create modules
+        module_ids = {}
+        module_column = df.columns[0]  # First column should be module names
+        
+        for module_name in df[module_column].unique():
+            if pd.notna(module_name) and str(module_name).strip():
+                module_name_str = str(module_name).strip()
+                module_code = module_name_str[:50]
+                module_name_full = module_name_str[:255]
+                
+                # Check if module exists
+                cursor.execute(
+                    "SELECT module_id FROM dim_module WHERE module_code = ?",
+                    (module_code,)
+                )
+                result = cursor.fetchone()
+                
+                if result:
+                    module_ids[module_code] = result[0]
+                else:
+                    # Insert new module (2 parameters, not 3!)
+                    cursor.execute(
+                        "INSERT INTO dim_module (module_code, module_name) VALUES (?, ?)",
+                        (module_code, module_name_full)
+                    )
+                    cursor.execute("SELECT @@IDENTITY")
+                    module_ids[module_code] = int(cursor.fetchone()[0])
+        
         query = """
-        INSERT INTO fact_rate_calculation 
-        (project_id, module, hours, hourly_rate, total_cost)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO fact_rate_calculation
+        (project_id, module_id, budgeted_hours, hourly_rate)
+        VALUES (?, ?, ?, ?)
         """
         
-        # Filter out summary rows (TOTAL)
-        df_clean = df[~df['Module'].str.upper().isin(['TOTAL', 'SUMS'])].copy()
+        # Filter out total/summary rows
+        df_clean = df[~df[module_column].astype(str).str.upper().isin(['TOTAL', 'SUMS', 'SUMMARY'])].copy()
         
-        records = [
-            (
-                project_id, 
-                row['Module'], 
-                row['Hours'], 
-                row['Hourly Rate'] if pd.notna(row['Hourly Rate']) else None,
-                row['Total Cost']
-            )
-            for _, row in df_clean.iterrows()
-        ]
+        records = []
+        for _, row in df_clean.iterrows():
+            module_name_raw = row[module_column]
+            if pd.isna(module_name_raw):
+                continue
+                
+            module_code = str(module_name_raw).strip()[:50]
+            module_id = module_ids.get(module_code)
+            
+            if not module_id:
+                continue
+            
+            # Assuming columns are: Module, Hours, Hourly Rate
+            hours = self._safe_float(row.iloc[1], 0.0)
+            rate = self._safe_float(row.iloc[2], 0.0)
+            
+            if hours and hours > 0:
+                records.append((
+                    project_id,
+                    module_id,
+                    hours,
+                    rate
+                ))
         
-        cursor.fast_executemany = True
-        cursor.executemany(query, records)
-        return len(records)
+        if records:
+            cursor.fast_executemany = True
+            cursor.executemany(query, records)
+            return len(records)
+        else:
+            self._logger.warning("No valid rate calculation records to insert")
+            return 0
     
-    def _safe_float(self, value: Any) -> Optional[float]:
-        """Safely convert value to float, return None if invalid"""
+    def _safe_float(self, value: Any, default: float = None) -> Optional[float]:
+        """Safely convert value to float, return default if invalid"""
         if pd.isna(value):
-            return None
+            return default
         try:
             return float(value)
         except (ValueError, TypeError):
-            return None
+            return default
+
 
     # ==================== READ OPERATIONS ====================
     
@@ -865,88 +1088,103 @@ class AzureSQLDBManager:
     
     def get_complete_project_data(self, project_id: int) -> Dict[str, pd.DataFrame]:
         """
-        Retrieve complete project data including all related fact tables in a single transaction.
-        
-        Args:
-            project_id: Project identifier
-        
-        Returns:
-            Dictionary with 5 DataFrames:
-            {
-                'project': dim_project data,
-                'cost_analysis': fact_cost_analysis_by_step data,
-                'hours_analysis': fact_hours_analysis_by_module data,
-                'timeline': fact_project_timeline data,
-                'rate_calculation': fact_rate_calculation data
-            }
+        Retrieve all data for a project from NEW schema.
+        Returns dict with DataFrames for each table.
         """
-        queries = {
-            'project': """
-                SELECT project_id, customer_name, project_name, project_start_date,
-                       created_date, modified_date
+        try:
+            with self._connection_context() as conn:
+                # 1. Project details
+                project_query = """
+                SELECT project_id, customer_name, project_name, 
+                    project_start_date, project_status, 
+                    created_date, modified_date
                 FROM dim_project
                 WHERE project_id = ?
-            """,
-            'cost_analysis': """
-                SELECT cost_analysis_id, project_id, payment_milestone, weight, cost, created_date
+                """
+                df_project = pd.read_sql(project_query, conn, params=(project_id,))
+                
+                # 2. Cost analysis
+                cost_query = """
+                SELECT cost_analysis_id, project_id, payment_milestone, 
+                    weight, cost, created_date
                 FROM fact_cost_analysis_by_step
                 WHERE project_id = ?
                 ORDER BY cost_analysis_id
-            """,
-            'hours_analysis': """
-                SELECT hours_analysis_id, project_id, hcm_module, weight, 
-                       pm_hours, plan_hours, ac_hours, testing_hours, 
-                       deploy_hours, post_go_live_hours, total_weeks_hours, created_date
-                FROM fact_hours_analysis_by_module
-                WHERE project_id = ?
-                ORDER BY hours_analysis_id
-            """,
-            'timeline': """
-                SELECT timeline_id, project_id, phase, duration_weeks, 
-                       start_date, end_date, created_date
-                FROM fact_project_timeline
-                WHERE project_id = ?
-                ORDER BY timeline_id
-            """,
-            'rate_calculation': """
-                SELECT rate_calc_id, project_id, module, hours, 
-                       hourly_rate, total_cost, created_date
-                FROM fact_rate_calculation
-                WHERE project_id = ?
-                ORDER BY rate_calc_id
-            """
-        }
-        
-        result = {}
-        
-        try:
-            with self._connection_context() as conn:
-                # Execute all queries in single transaction
-                for key, query in queries.items():
-                    df = pd.read_sql(query, conn, params=(project_id,))
-                    result[key] = df
-                    self._logger.debug(f"Retrieved {len(df)} rows for {key}")
+                """
+                df_cost = pd.read_sql(cost_query, conn, params=(project_id,))
                 
-                # Check if project exists
-                if result['project'].empty:
-                    self._logger.warning(f"Project with ID {project_id} not found")
-                else:
-                    total_rows = sum(len(df) for df in result.values())
-                    self._logger.info(
-                        f"Retrieved complete data for project_id={project_id}: {total_rows} total rows"
-                    )
+                # 3. Hours analysis - NEW NORMALIZED TABLE
+                hours_query = """
+                SELECT 
+                    h.hours_id,
+                    h.project_id,
+                    m.module_code,
+                    m.module_name,
+                    ph.phase_code,
+                    ph.phase_name,
+                    h.week_number,
+                    h.module_start_date,
+                    h.planned_hours,
+                    h.module_weight,
+                    h.created_date
+                FROM fact_module_phase_hours h
+                INNER JOIN dim_module m ON h.module_id = m.module_id
+                INNER JOIN dim_phases ph ON h.phase_id = ph.phase_id
+                WHERE h.project_id = ?
+                ORDER BY m.module_code, ph.default_sequence, h.week_number
+                """
+                df_hours = pd.read_sql(hours_query, conn, params=(project_id,))
                 
-                return result
+                # 4. Timeline
+                timeline_query = """
+                SELECT 
+                    t.timeline_id,
+                    t.project_id,
+                    ph.phase_code,
+                    ph.phase_name,
+                    t.duration_weeks,
+                    t.start_date,
+                    t.end_date,
+                    t.created_date
+                FROM fact_project_timeline t
+                INNER JOIN dim_phases ph ON t.phase_id = ph.phase_id
+                WHERE t.project_id = ?
+                ORDER BY ph.default_sequence
+                """
+                df_timeline = pd.read_sql(timeline_query, conn, params=(project_id,))
+                
+                # 5. Rate calculation
+                rate_query = """
+                SELECT 
+                    r.rate_calc_id,
+                    r.project_id,
+                    m.module_code,
+                    m.module_name,
+                    r.budgeted_hours,
+                    r.hourly_rate,
+                    r.total_cost,
+                    r.created_date
+                FROM fact_rate_calculation r
+                INNER JOIN dim_module m ON r.module_id = m.module_id
+                WHERE r.project_id = ?
+                ORDER BY m.module_code
+                """
+                df_rate = pd.read_sql(rate_query, conn, params=(project_id,))
+                
+                self._logger.info(f"Retrieved complete project data for project {project_id}")
+                
+                return {
+                    'project': df_project,
+                    'costanalysis': df_cost,
+                    'hoursanalysis': df_hours,
+                    'timeline': df_timeline,
+                    'ratecalculation': df_rate
+                }
                 
         except Exception as e:
-            self._logger.exception(f"Failed to retrieve complete project data for {project_id}")
-            return {
-                'project': pd.DataFrame(),
-                'cost_analysis': pd.DataFrame(),
-                'hours_analysis': pd.DataFrame(),
-                'timeline': pd.DataFrame(),
-                'rate_calculation': pd.DataFrame()
-            }
+            self._logger.error(f"Failed to retrieve complete project data for {project_id}")
+            self._logger.error(str(e))
+            raise DatabaseConnectionError(f"Failed to retrieve project data: {str(e)}")
     
     def get_cost_analysis(self, project_id: int) -> pd.DataFrame:
         """
@@ -2135,11 +2373,7 @@ class AzureSQLDBManager:
                 else:
                     df = pd.read_sql(query, conn)
                 
-                self._logger.info(
-                    "Custom query executed successfully",
-                    rows_returned=len(df),
-                    columns_returned=len(df.columns)
-                )
+                self._logger.info(f"Custom query executed successfully, rows: {len(df)}, columns: {len(df.columns)}")
                 
                 return df
                 
@@ -2345,13 +2579,15 @@ class TransactionManager:
 if __name__ == "__main__":
     # Initialize database manager
     db_manager = AzureSQLDBManager(
-        server="myserver.database.windows.net",
-        database="project_database",
-        pool_size=10,
-        max_overflow=5,
+        server="project-utilisation.database.windows.net",
+        database="Utilisation_tracker_db",
+        pool_size=5,
+        max_overflow=2,
         pool_timeout=30,
-        log_level='DEBUG',
-        authentication_method='ActiveDirectoryInteractive'
+        log_level='INFO',
+        authentication_method='SqlPassword',
+        username='kliqtek-tester',
+        password='cl@r1tythr0ughkn0wl3dg3'
     )
     
     # Check pool stats
