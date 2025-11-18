@@ -27,17 +27,23 @@
   <div class="card mb-4">
     <div class="card-body">
       <div class="row align-items-end">
-        <div class="col-md-6">
-          <label class="form-label">Select Project to Edit</label>
-          <select class="form-select" id="projectSelector">
-            <option value="">-- Choose a project --</option>
-            <!-- Dynamically populated -->
-          </select>
+        <div class="mb-3">
+            <label for="customerSelector" class="form-label">Select Customer</label>
+            <select id="customerSelector" class="form-select" onchange="loadCustomerProjects()">
+                <option value="">-- Select Customer --</option>
+            </select>
         </div>
-        <div class="col-md-3">
-          <button class="btn btn-primary" onclick="loadProjectData()">
-            <i class="bi bi-download"></i> Load Project Data
-          </button>
+
+        <div class="mb-3">
+            <label for="projectSelector" class="form-label">Select Project</label>
+            <select id="projectSelector" class="form-select" disabled>
+                <option value="">-- Select Customer First --</option>
+            </select>
+        </div>
+
+        <button onclick="loadProjectData()" class="btn btn-primary" id="loadBtn" disabled>
+            Load Project Data
+        </button>
         </div>
       </div>
     </div>

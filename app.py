@@ -126,7 +126,7 @@ def get_date_range_from_request():
 def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=None):
     """
     Aggregate module phase hours by time period within date range.
-    Includes ALL periods in the range, even if they have zero hours.
+    Returns data suitable for Chart.js line chart.
     """
     try:
         from datetime import datetime, timedelta
@@ -166,8 +166,6 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
             SELECT
                 module_name,
                 FORMAT(week_start_date, 'yyyy-MM') AS period,
-                MIN(week_start_date) as period_start,
-                MAX(week_end_date) as period_end,
                 SUM(planned_hours) AS total_hours
             FROM vw_module_phase_hours_calendar
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
@@ -182,8 +180,6 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
             SELECT
                 module_name,
                 CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
-                MIN(week_start_date) as period_start,
-                MAX(week_end_date) as period_end,
                 SUM(planned_hours) AS total_hours
             FROM vw_module_phase_hours_calendar
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
@@ -203,16 +199,22 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
                 'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
             }
         
-        # Generate complete period list (fill gaps with zeros)
+        # *** KEY FIX: Use actual periods from database instead of generating them ***
         if granularity == 'weekly':
-            all_periods = generate_week_labels(start_date, end_date)
+            # Get unique week_start_dates from the actual data
+            all_periods = sorted(df['week_start_date'].unique())
+            all_periods = [d.strftime('%Y-%m-%d') for d in all_periods]
         elif granularity == 'monthly':
-            all_periods = generate_month_labels(start_date, end_date)
+            all_periods = sorted(df['period'].unique())
         else:
-            all_periods = generate_quarter_labels(start_date, end_date)
+            all_periods = sorted(df['period'].unique())
         
         # Get unique modules
         modules = sorted(df['module_name'].unique())
+        
+        app.logger.info(f"Found {len(modules)} modules: {modules}")
+        app.logger.info(f"Found {len(all_periods)} actual data periods")
+        app.logger.info(f"Periods: {all_periods}")
         
         # Create dataset for each module
         datasets = []
@@ -228,16 +230,25 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
                     period_key = row['period']
                 hours_by_period[period_key] = float(row['total_hours'])
             
-            # Fill in all periods (including zeros)
+            # Fill in all periods - now these match actual data periods!
             data_values = [hours_by_period.get(period, 0) for period in all_periods]
+            
+            # Log the actual data
+            non_zero = sum(1 for v in data_values if v > 0)
+            total = sum(data_values)
+            app.logger.info(f"Module '{module}': {non_zero}/{len(data_values)} non-zero weeks, total {total:.1f} hours")
+            app.logger.info(f"  Data: {data_values}")
             
             datasets.append({
                 'label': module,
                 'data': data_values,
-                'backgroundColor': get_module_color(module),
                 'borderColor': get_module_color(module),
-                'fill': False
+                'backgroundColor': get_module_color(module),
+                'fill': False,
+                'tension': 0.1
             })
+        
+        app.logger.info(f"Generated {len(datasets)} datasets")
         
         return {
             'labels': all_periods,
@@ -246,10 +257,14 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
         }
         
     except Exception as e:
-        app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}")
+        app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}\")")
         import traceback
         traceback.print_exc()
-        return {'labels': [], 'datasets': []}
+        return {
+            'labels': [],
+            'datasets': [],
+            'dateRange': {'startDate': str(start_date) if start_date else '', 'endDate': str(end_date) if end_date else ''}
+        }
 
 
 def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=None):
@@ -667,6 +682,32 @@ def get_timeline_data():
             "workload": {"periods": [], "datasets": {"activeProjects": [], "activeModules": []}},
             "dateRange": {"minDate": today.isoformat(), "maxDate": today.isoformat()}
         }), 500
+
+@app.route('/api/customers')
+def get_customers():
+    """Get distinct customer names"""
+    query = """
+        SELECT DISTINCT customer_name 
+        FROM dim_project 
+        WHERE project_status = 'Active'
+        ORDER BY customer_name
+    """
+    df = db_manager.execute_custom_query(query)
+    return jsonify(df['customer_name'].tolist())
+
+@app.route('/api/customers/<customer_name>/projects')
+def get_customer_projects(customer_name):
+    """Get projects for a specific customer"""
+    query = f"""
+        SELECT project_id AS "projectId", 
+               project_name AS "projectName"
+        FROM dim_project 
+        WHERE customer_name = '{customer_name}' 
+        AND project_status = 'Active'
+        ORDER BY project_name
+    """
+    df = db_manager.execute_custom_query(query)
+    return jsonify(df.to_dict('records'))
 
 @app.route('/api/dashboard-metrics')
 def get_dashboard_metrics():

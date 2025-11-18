@@ -350,6 +350,7 @@ async function loadCharts() {
         
         const params = new URLSearchParams({
             granularity: granularity,
+            view: 'by-module',  // ← ENSURE THIS IS SET
             start_date: currentDateRange.startDate,
             end_date: currentDateRange.endDate
         });
@@ -361,25 +362,17 @@ async function loadCharts() {
         const moduleData = await moduleResponse.json();
         
         console.log('Module data received:', moduleData);
-        console.log('Date range from API:', moduleData.dateRange);
-        console.log('Labels count:', moduleData.labels?.length);
-        console.log('Datasets count:', moduleData.datasets?.length);
+        console.log('Dataset count:', moduleData.datasets?.length);
         
         await Promise.all([
             loadStackedBarChart(allTimelineData.workload),
-            loadLineChart(moduleData),        // Pass the complete data with date range
+            loadLineChart(moduleData),
             loadWeeklyModuleTable()
         ]);
         
         console.log('✓ All charts loaded successfully');
     } catch (error) {
         console.error('Error loading charts:', error);
-        
-        const lineChartContainer = document.getElementById('lineChart');
-        if (lineChartContainer) {
-            lineChartContainer.innerHTML = 
-                '<div class="alert alert-danger">Error loading charts. Please check console for details.</div>';
-        }
     }
 }
 
@@ -437,6 +430,8 @@ function loadStackedBarChart(data) {
 function loadLineChart(moduleData) {
     try {
         console.log('Loading line chart with module data:', moduleData);
+        console.log('Labels:', moduleData.labels);
+        console.log('Datasets:', moduleData.datasets?.length);
         
         const ctx = document.getElementById('lineChart');
         if (!ctx) {
@@ -449,7 +444,18 @@ function loadLineChart(moduleData) {
             lineChartInstance.destroy();
         }
         
-        // Create chart with date-bounded X-axis
+        // Log the actual data values
+        console.log('📊 Chart Debug Info:');
+        moduleData.datasets.forEach((dataset, i) => {
+            const nonZeroValues = dataset.data.filter(v => v > 0);
+            const totalHours = dataset.data.reduce((a, b) => a + b, 0);
+            console.log(`  ${dataset.label}:`);
+            console.log(`    - Total hours: ${totalHours.toFixed(1)}`);
+            console.log(`    - Non-zero points: ${nonZeroValues.length}/${dataset.data.length}`);
+            console.log(`    - Data array:`, dataset.data);
+        });
+
+        // Create chart with module data
         lineChartInstance = new Chart(ctx, {
             type: 'line',
             data: {
@@ -459,35 +465,73 @@ function loadLineChart(moduleData) {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
                 plugins: {
                     title: {
                         display: true,
-                        text: 'Module Hours Over Time'
+                        text: 'Module Hours Over Time',
+                        font: {
+                            size: 16,
+                            weight: 'bold'
+                        }
                     },
                     legend: {
                         display: true,
-                        position: 'top'
+                        position: 'top',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 15
+                        }
                     },
                     tooltip: {
                         mode: 'index',
-                        intersect: false
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(1) + ' hours';
+                                }
+                                return label;
+                            }
+                        }
                     }
                 },
                 scales: {
                     x: {
                         title: {
                             display: true,
-                            text: 'Time Period'
+                            text: 'Week Starting',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
                         },
-                        // Force X-axis to show all periods in range
-                        min: moduleData.labels?.[0],
-                        max: moduleData.labels?.[moduleData.labels.length - 1]
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
                     },
                     y: {
                         beginAtZero: true,
                         title: {
                             display: true,
-                            text: 'Hours'
+                            text: 'Hours',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return value.toFixed(0);
+                            }
                         }
                     }
                 }

@@ -4,28 +4,51 @@ let originalData = {}; // Store original data for change tracking
 // Load project list on page load
 document.addEventListener('DOMContentLoaded', async () => {
     try {
-        const response = await fetch('/api/projects');
-        const projects = await response.json();
+        const response = await fetch('/api/customers');
+        const customers = await response.json();
         
-        console.log('Projects received:', projects);  // ← DEBUG
-        
-        const selector = document.getElementById('projectSelector');
-        
-        projects.forEach(proj => {
-            // Fixed: Use camelCase properties that match the Python response
-            console.log('Adding project:', proj.projectId, proj.customerName);  // ← DEBUG
-            
+        const selector = document.getElementById('customerSelector');
+        customers.forEach(customer => {
             const option = document.createElement('option');
-            option.value = proj.projectId;  // Changed from proj.project_id
-            option.textContent = `${proj.customerName} - ${proj.projectName}`;  // Changed from snake_case
+            option.value = customer;
+            option.textContent = customer;
             selector.appendChild(option);
         });
+    } catch (error) {
+        console.error('Error loading customers:', error);
+    }
+});
+
+async function loadCustomerProjects() {
+    const customer = document.getElementById('customerSelector').value;
+    const projectSelector = document.getElementById('projectSelector');
+    const loadBtn = document.getElementById('loadBtn');
+    
+    // Reset project dropdown
+    projectSelector.innerHTML = '<option value="">-- Select Project --</option>';
+    projectSelector.disabled = true;
+    loadBtn.disabled = true;
+    
+    if (!customer) return;
+    
+    try {
+        const response = await fetch(`/api/customers/${encodeURIComponent(customer)}/projects`);
+        const projects = await response.json();
         
-        console.log('Dropdown populated, total options:', selector.options.length);  // ← DEBUG
+        projects.forEach(proj => {
+            const option = document.createElement('option');
+            option.value = proj.projectId;
+            option.textContent = proj.projectName;
+            projectSelector.appendChild(option);
+        });
+        
+        projectSelector.disabled = false;
+        loadBtn.disabled = false;
     } catch (error) {
         console.error('Error loading projects:', error);
     }
-});
+}
+
 
 async function loadProjectData() {
   const projectId = document.getElementById('projectSelector').value;
