@@ -6,6 +6,12 @@ let parsedStartDate = null;
 
 // ==================== EVENT LISTENERS ====================
 
+// Customer selector change
+document.getElementById('customerName')?.addEventListener('change', loadCustomerProjects);
+
+// Project selector change
+document.getElementById('projectName')?.addEventListener('change', onProjectSelect);
+
 // Drag and drop event handlers
 dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -31,6 +37,64 @@ fileInput.addEventListener('change', (e) => {
         handleFileSelect(e.target.files[0]);
     }
 });
+
+// ==================== INITIALIZATION ====================
+
+// Load customers on page load
+document.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const response = await fetch('/api/customers');
+        const customers = await response.json();
+        
+        const customerSelect = document.getElementById('customerName');
+        customers.forEach(customer => {
+            const option = document.createElement('option');
+            option.value = customer;
+            option.textContent = customer;
+            customerSelect.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading customers:', error);
+        showAlert('Error loading customers: ' + error.message, 'danger');
+    }
+});
+
+// ==================== CUSTOMER/PROJECT HANDLERS ====================
+
+async function loadCustomerProjects() {
+    const customer = document.getElementById('customerName').value;
+    const projectSelect = document.getElementById('projectName');
+    
+    // Reset project dropdown
+    projectSelect.innerHTML = '<option value="">-- Select Project --</option>';
+    projectSelect.disabled = true;
+    
+    if (!customer) return;
+    
+    try {
+        const response = await fetch(`/api/customers/${encodeURIComponent(customer)}/projects`);
+        const projects = await response.json();
+        
+        projects.forEach(proj => {
+            const option = document.createElement('option');
+            option.value = proj.projectName;
+            option.textContent = proj.projectName;
+            option.dataset.projectId = proj.projectId;
+            option.dataset.startDate = proj.projectStartDate;
+            projectSelect.appendChild(option);
+        });
+        
+        projectSelect.disabled = false;
+    } catch (error) {
+        console.error('Error loading projects:', error);
+        showAlert('Error loading projects: ' + error.message, 'danger');
+    }
+}
+
+function onProjectSelect() {
+    const projectSelect = document.getElementById('projectName');
+    const selectedOption = projectSelect.options[projectSelect.selectedIndex];
+}
 
 // ==================== FILE HANDLING ====================
 

@@ -184,13 +184,18 @@
                     <h5 class="card-title mb-3">Step 2: Project Information</h5>
                     <form id="projectInfoForm">
                         <div class="row">
-                            <div class="col-md-4 mb-3">
-                                <label for="customerName" class="form-label">Customer Name <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" id="customerName" required>
+                            <div class="col-md-6">
+                                <label for="customerName" class="form-label">Customer Name *</label>
+                                <select id="customerName" class="form-select" required>
+                                    <option value="">-- Select Customer --</option>
+                                </select>
                             </div>
-                            <div class="col-md-4 mb-3">
-                                <label for="projectName" class="form-label">Project Name <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" id="projectName" required>
+
+                            <div class="col-md-6">
+                                <label for="projectName" class="form-label">Project Name *</label>
+                                <select id="projectName" class="form-select" required disabled>
+                                    <option value="">-- Select Project --</option>
+                                </select>
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label for="projectStartDate" class="form-label">Project Start Date <span class="text-danger">*</span></label>
