@@ -267,19 +267,6 @@ class ProjectTimeline {
         this.ctx.lineWidth = 1;
         this.ctx.strokeRect(startX, y, width, height);
         
-        // Draw phase label if wide enough
-        if (width > 50) {
-            this.ctx.fillStyle = '#FFF';
-            this.ctx.font = 'bold 10px sans-serif';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText(
-                phase.phase,
-                startX + (width / 2),
-                y + (height / 2)
-            );
-        }
-        
         // Store element for interaction
         if (!this.elements) this.elements = [];
         this.elements.push({

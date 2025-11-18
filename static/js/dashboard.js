@@ -10,6 +10,11 @@ let weekDetailChartInstance = null;
 let allProjects = [];
 let allTimelineData = null;
 
+let currentDateRange = {
+    startDate: null,
+    endDate: null
+};
+
 // Color scheme for phases
 const PHASE_COLORS = {
     'P+M': '#FF6B6B',
@@ -66,18 +71,9 @@ function attachEventListeners() {
         refreshCharts();
     });
     
-    // Date range change
-    document.getElementById('startDate').addEventListener('change', () => {
-        if (timelineInstance) {
-            timelineInstance.updateDateRange();
-        }
-    });
-    
-    document.getElementById('endDate').addEventListener('change', () => {
-        if (timelineInstance) {
-            timelineInstance.updateDateRange();
-        }
-    });
+    // Date range change - UPDATED to reload all data
+    document.getElementById('startDate').addEventListener('change', updateDateRange);
+    document.getElementById('endDate').addEventListener('change', updateDateRange);
     
     // Project search
     document.getElementById('projectSearch').addEventListener('input', (e) => {
@@ -91,96 +87,104 @@ function attachEventListeners() {
 
 async function loadDashboardData() {
     try {
+        console.log('=== loadDashboardData START ===');
+        
+        // Get current date range from inputs
+        currentDateRange.startDate = document.getElementById('startDate').value;
+        currentDateRange.endDate = document.getElementById('endDate').value;
+        
+        // Build query parameters for date filtering
+        const params = new URLSearchParams({
+            start_date: currentDateRange.startDate,
+            end_date: currentDateRange.endDate
+        });
+        
         // Fetch all data in parallel for better performance
         const [timelineResponse, projectsResponse, metricsResponse] = await Promise.all([
-            fetch('/api/timeline-data'),
-            fetch('/api/projects'),
-            fetch('/api/dashboard-metrics')
+            fetch(`/api/timeline-data?${params}`),
+            fetch('/api/projects'),  // Active Projects - NO date filtering
+            fetch(`/api/dashboard-metrics?${params}`)
         ]);
-
+        
+        console.log('API responses received');
+        console.log('Timeline response OK?', timelineResponse.ok);
+        console.log('Projects response OK?', projectsResponse.ok);
+        console.log('Metrics response OK?', metricsResponse.ok);
+        
         if (!timelineResponse.ok) throw new Error(`Timeline API Error: ${timelineResponse.statusText}`);
         if (!projectsResponse.ok) throw new Error(`Projects API Error: ${projectsResponse.statusText}`);
         if (!metricsResponse.ok) throw new Error(`Metrics API Error: ${metricsResponse.statusText}`);
-
+        
+        // Parse all responses
         allTimelineData = await timelineResponse.json();
         const projectsList = await projectsResponse.json();
         const metrics = await metricsResponse.json();
-
-        // Update metrics cards
+        
+        console.log('=== RAW API DATA ===');
+        console.log('allTimelineData:', allTimelineData);
+        console.log('Timeline projects count:', allTimelineData?.projects?.length);
+        console.log('projectsList count:', projectsList?.length);
+        console.log('metrics:', metrics);
+        
+        // Update dashboard components
         updateMetrics(metrics);
-
-        // Populate projects table with the CORRECT data (projectsList, not timeline data)
-        populateProjectsTable(projectsList);
+        populateProjectsTable(projectsList);  // Active Projects table (no date filter)
         populateProjectFilter(projectsList);
-
-        // Try to create timeline only if we have valid data
-        if (allTimelineData && 
-            allTimelineData.projects && 
-            allTimelineData.projects.length > 0 &&
-            allTimelineData.dateRange &&
-            allTimelineData.dateRange.minDate) {
+        
+        // Initialize timeline visualization with date-filtered data
+        if (allTimelineData && allTimelineData.projects && allTimelineData.projects.length > 0) {
+            console.log('✓ Validation passed. Creating timeline...');
+            const transformedData = transformTimelineData(allTimelineData);
             
-            try {
-                timelineInstance = new ProjectTimeline(
-                    'timelineCanvas',
-                    allTimelineData,
-                    {
-                        granularity: 'weekly',
-                        onProjectClick: (project, phase) => {
-                            console.log('Project clicked:', project, phase);
-                        }
+            timelineInstance = new ProjectTimeline(
+                'timelineCanvas',
+                transformedData,
+                {
+                    granularity: 'weekly',
+                    onProjectClick: (project, phase) => {
+                        console.log('Project clicked:', project, phase);
                     }
-                );
-            } catch (timelineError) {
-                console.error("Timeline initialization failed:", timelineError);
-                const canvas = document.getElementById('timelineCanvas');
-                if (canvas) {
-                    const ctx = canvas.getContext('2d');
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    ctx.textAlign = 'center';
-                    ctx.fillStyle = '#888';
-                    ctx.fillText('Timeline could not be displayed', canvas.width / 2, canvas.height / 2);
                 }
-            }
+            );
+            console.log('✓ ProjectTimeline created successfully');
         } else {
-            console.warn("No valid timeline data. Skipping timeline rendering.");
+            console.warn('✗ No valid timeline data for selected date range');
         }
-
-        // Load charts
+        
+        // Load charts with date filtering
         await loadCharts();
-
+        
+        console.log('=== loadDashboardData END ===');
     } catch (error) {
-        console.error("Fatal error loading dashboard:", error);
+        console.error('✗ Fatal error loading dashboard:', error);
+        console.error('Error stack:', error.stack);
+        
+        // Display error message to user
         const tableBody = document.querySelector('#projectsTable tbody');
         if (tableBody) {
-            tableBody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading data. Please refresh.</td></tr>';
+            tableBody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading dashboard data</td></tr>';
         }
     }
 }
 
 function updateMetrics(metrics) {
-    // Update Total Projects
-    const totalProjectsEl = document.getElementById('totalProjects');
-    if (totalProjectsEl) {
-        totalProjectsEl.textContent = metrics.totalProjects || 0;
-    }
-
-    // Update Active Modules
-    const activeModulesEl = document.getElementById('activeModules');
-    if (activeModulesEl) {
-        activeModulesEl.textContent = metrics.activeModules || 0;
-    }
-
-    // Update Average Utilization
-    const avgUtilizationEl = document.getElementById('averageUtilization');
-    if (avgUtilizationEl) {
-        avgUtilizationEl.textContent = `${metrics.averageUtilization || 0}%`;
-    }
-
-    // Update Total Hours
-    const totalHoursEl = document.getElementById('totalHours');
-    if (totalHoursEl) {
-        totalHoursEl.textContent = Math.round(metrics.totalHours || 0);
+    // Get all metric-value elements (they appear in order: Total Projects, Active Modules, Avg Utilization, Total Hours)
+    const metricValues = document.querySelectorAll('.metric-value');
+    
+    if (metricValues.length >= 4) {
+        // Total Projects (first metric card)
+        metricValues[0].innerHTML = metrics.totalProjects || 0;
+        
+        // Active Modules (second metric card)
+        metricValues[1].innerHTML = metrics.activeModules || 0;
+        
+        // Average Utilization (third metric card)
+        metricValues[2].innerHTML = `${metrics.averageUtilization || 0}%`;
+        
+        // Total Hours (fourth metric card)
+        metricValues[3].innerHTML = Math.round(metrics.totalHours || 0);
+    } else {
+        console.error('Could not find all metric value elements');
     }
 }
 
@@ -335,11 +339,48 @@ function filterTimelineByProject(projectId) {
 // CHARTS
 // ============================================================================
 
+/**
+ * Load and render all chart visualizations with date filtering
+ */
 async function loadCharts() {
-    await Promise.all([
-        loadStackedBarChart(),
-        loadLineChart()
-    ]);
+    try {
+        console.log('Loading charts with date range:', currentDateRange);
+        
+        const granularity = document.querySelector('input[name="timeGranularity"]:checked')?.value || 'weekly';
+        
+        const params = new URLSearchParams({
+            granularity: granularity,
+            start_date: currentDateRange.startDate,
+            end_date: currentDateRange.endDate
+        });
+        
+        const moduleResponse = await fetch(`/api/module-utilization?${params}`);
+        if (!moduleResponse.ok) {
+            throw new Error(`Module utilization API error: ${moduleResponse.statusText}`);
+        }
+        const moduleData = await moduleResponse.json();
+        
+        console.log('Module data received:', moduleData);
+        console.log('Date range from API:', moduleData.dateRange);
+        console.log('Labels count:', moduleData.labels?.length);
+        console.log('Datasets count:', moduleData.datasets?.length);
+        
+        await Promise.all([
+            loadStackedBarChart(allTimelineData.workload),
+            loadLineChart(moduleData),        // Pass the complete data with date range
+            loadWeeklyModuleTable()
+        ]);
+        
+        console.log('✓ All charts loaded successfully');
+    } catch (error) {
+        console.error('Error loading charts:', error);
+        
+        const lineChartContainer = document.getElementById('lineChart');
+        if (lineChartContainer) {
+            lineChartContainer.innerHTML = 
+                '<div class="alert alert-danger">Error loading charts. Please check console for details.</div>';
+        }
+    }
 }
 
 function loadStackedBarChart(data) {
@@ -393,59 +434,70 @@ function loadStackedBarChart(data) {
     });
 }
 
-async function loadLineChart() {
+function loadLineChart(moduleData) {
     try {
-        const granularity = document.querySelector('input[name="timeGranularity"]:checked').value;
-        const response = await fetch(`/api/module-utilization?granularity=${granularity}&view=by-module`);
-        const data = await response.json();
+        console.log('Loading line chart with module data:', moduleData);
         
+        const ctx = document.getElementById('lineChart');
+        if (!ctx) {
+            console.error('Line chart canvas not found');
+            return;
+        }
+        
+        // Destroy existing chart
         if (lineChartInstance) {
             lineChartInstance.destroy();
         }
         
-        const ctx = document.getElementById('lineChart').getContext('2d');
+        // Create chart with date-bounded X-axis
         lineChartInstance = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: data.periods || [],
-                datasets: (data.modules || []).map((mod, idx) => ({
-                    label: mod.moduleName,
-                    data: mod.hours,
-                    borderColor: PROJECT_COLORS[idx % PROJECT_COLORS.length],
-                    backgroundColor: PROJECT_COLORS[idx % PROJECT_COLORS.length] + '20',
-                    fill: false,
-                    tension: 0.1
-                }))
+                labels: moduleData.labels || [],
+                datasets: moduleData.datasets || []
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Module Hours Over Time'
+                    },
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
                 scales: {
                     x: {
-                        title: { display: true, text: 'Time Period' }
+                        title: {
+                            display: true,
+                            text: 'Time Period'
+                        },
+                        // Force X-axis to show all periods in range
+                        min: moduleData.labels?.[0],
+                        max: moduleData.labels?.[moduleData.labels.length - 1]
                     },
                     y: {
                         beginAtZero: true,
-                        title: { display: true, text: 'Total Hours' }
-                    }
-                },
-                plugins: {
-                    legend: { 
-                        position: 'bottom',
-                        labels: { boxWidth: 12 }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: (context) => {
-                                return `${context.dataset.label}: ${context.parsed.y} hours`;
-                            }
+                        title: {
+                            display: true,
+                            text: 'Hours'
                         }
                     }
                 }
             }
         });
+        
+        console.log('✓ Line chart created successfully');
+        
     } catch (error) {
-        console.error('Error loading line chart:', error);
+        console.error('Error in loadLineChart:', error);
     }
 }
 
@@ -561,6 +613,132 @@ function createWeekDetailChart(modules) {
 // UTILITY FUNCTIONS
 // ============================================================================
 
+function updateDateRange() {
+    currentDateRange.startDate = document.getElementById('startDate').value;
+    currentDateRange.endDate = document.getElementById('endDate').value;
+    
+    console.log('Date range updated:', currentDateRange);
+    
+    // Refresh all date-sensitive components
+    loadDashboardData();
+}
+
+function transformTimelineData(apiData) {
+    console.log('=== transformTimelineData START ===');
+    console.log('Input apiData:', apiData);
+    console.log('Input projects count:', apiData?.projects?.length);
+    
+    const projectMap = new Map();
+    
+    // Map phase codes to standard names for the timeline
+    const phaseMapping = {
+        'PM': 'P+M',
+        'PLAN': 'Plan',
+        'AC': 'A+C',
+        'TESTING': 'Testing',
+        'DEPLOY': 'Deploy',
+        'POST_GO_LIVE': 'Post Go Live'
+    };
+    
+    const phaseOrder = ['P+M', 'Plan', 'A+C', 'Testing', 'Deploy', 'Post Go Live'];
+    
+    // Group by project, then by phase (ignoring module)
+    apiData.projects.forEach((row, index) => {
+        if (index < 3) console.log(`Processing row ${index}:`, row);
+        
+        const projKey = row.project_id;
+        
+        if (!projectMap.has(projKey)) {
+            console.log(`Creating new project: ${row.project_name} (ID: ${projKey})`);
+            projectMap.set(projKey, {
+                projectId: row.project_id,
+                projectName: row.project_name,
+                customerName: row.customer_name,
+                projectStatus: row.project_status,
+                phaseMap: new Map()
+            });
+        }
+        
+        const project = projectMap.get(projKey);
+        
+        // Normalize phase code
+        const normalizedPhase = phaseMapping[row.phase_code] || row.phase_code;
+        
+        if (index < 3) console.log(`  Phase: ${row.phase_code} -> ${normalizedPhase}`);
+        
+        // Track min/max dates for each phase across ALL modules
+        if (!project.phaseMap.has(normalizedPhase)) {
+            console.log(`  Creating new phase for project ${projKey}: ${normalizedPhase}`);
+            project.phaseMap.set(normalizedPhase, {
+                phase: normalizedPhase,
+                phaseName: row.phase_name,
+                startDate: row.week_start_date,
+                endDate: row.week_end_date
+            });
+        } else {
+            const phase = project.phaseMap.get(normalizedPhase);
+            
+            // Expand the phase date range if this module-week extends it
+            if (new Date(row.week_start_date) < new Date(phase.startDate)) {
+                console.log(`  Extending ${normalizedPhase} start: ${phase.startDate} -> ${row.week_start_date}`);
+                phase.startDate = row.week_start_date;
+            }
+            if (new Date(row.week_end_date) > new Date(phase.endDate)) {
+                console.log(`  Extending ${normalizedPhase} end: ${phase.endDate} -> ${row.week_end_date}`);
+                phase.endDate = row.week_end_date;
+            }
+        }
+    });
+    
+    console.log('ProjectMap after processing:', projectMap);
+    console.log('Number of projects in map:', projectMap.size);
+    
+    // Convert to array format
+    const projects = Array.from(projectMap.values()).map(proj => {
+        console.log(`Converting project ${proj.projectName}:`);
+        const phases = Array.from(proj.phaseMap.values());
+        console.log(`  Has ${phases.length} phases:`, phases.map(p => p.phase));
+        
+        // Sort phases by predefined order
+        phases.sort((a, b) => {
+            const indexA = phaseOrder.indexOf(a.phase);
+            const indexB = phaseOrder.indexOf(b.phase);
+            return indexA - indexB;
+        });
+        
+        console.log(`  Sorted phases:`, phases.map(p => p.phase));
+        
+        // Calculate duration in weeks for each phase
+        phases.forEach(phase => {
+            const start = new Date(phase.startDate);
+            const end = new Date(phase.endDate);
+            phase.durationWeeks = Math.ceil((end - start) / (7 * 24 * 60 * 60 * 1000)) + 1;
+            console.log(`    ${phase.phase}: ${phase.startDate} to ${phase.endDate} (${phase.durationWeeks} weeks)`);
+        });
+        
+        return {
+            projectId: proj.projectId,
+            projectName: proj.projectName,
+            customerName: proj.customerName,
+            projectStatus: proj.projectStatus,
+            phases: phases
+        };
+    });
+    
+    const result = {
+        dateRange: apiData.dateRange,
+        projects: projects,
+        workload: apiData.workload
+    };
+    
+    console.log('=== transformTimelineData END ===');
+    console.log('Output projects count:', result.projects.length);
+    console.log('Output structure:', result);
+    
+    return result;
+}
+
+
 function viewProjectDetails(projectId) {
     window.location.href = `/edit?project=${projectId}`;
 }
@@ -611,3 +789,243 @@ function escapeHtml(text) {
 }
 
 console.log('Dashboard.js loaded successfully');
+
+// ============================================================================
+// WEEKLY MODULE TABLE
+// ============================================================================
+
+async function loadWeeklyModuleTable() {
+    try {
+        console.log('Loading weekly module table...');
+        
+        const params = new URLSearchParams({
+            start_date: currentDateRange.startDate,
+            end_date: currentDateRange.endDate
+        });
+        
+        const response = await fetch(`/api/weekly-module-hours?${params}`);
+        if (!response.ok) {
+            throw new Error(`Weekly module hours API error: ${response.statusText}`);
+        }
+        
+        const apiData = await response.json();
+        
+        console.log('Weekly data received:', apiData);
+        console.log('Data structure:', JSON.stringify(apiData, null, 2));
+        
+        const tableContainer = document.getElementById('weeklyModuleTableContainer');
+        if (!tableContainer) {
+            console.error('Weekly module table container not found');
+            return;
+        }
+        
+        // Validate data structure
+        if (!apiData.weeks || apiData.weeks.length === 0) {
+            tableContainer.innerHTML = '<div class="alert alert-info">No weeks available for the selected date range</div>';
+            return;
+        }
+        
+        if (!apiData.modules || apiData.modules.length === 0) {
+            tableContainer.innerHTML = '<div class="alert alert-info">No modules found for the selected date range</div>';
+            return;
+        }
+        
+        if (!apiData.data || apiData.data.length === 0) {
+            tableContainer.innerHTML = '<div class="alert alert-info">No hour data available for the selected date range</div>';
+            return;
+        }
+        
+        // Build table HTML
+        let html = '<div class="table-responsive" style="max-height: 600px; overflow-y: auto;">';
+        html += '<table class="table table-sm table-bordered table-hover mb-0">';
+        html += '<thead class="table-light" style="position: sticky; top: 0; z-index: 10;"><tr>';
+        html += '<th class="sticky-col" style="min-width: 150px;">Module</th>';
+        
+        // Week headers - use the label from weeks array
+        apiData.weeks.forEach((week, index) => {
+            html += `<th class="text-center text-nowrap" style="min-width: 80px;" title="${week.label}">${formatWeekHeaderShort(week.start)}</th>`;
+        });
+        html += '<th class="text-center bg-light" style="min-width: 80px;"><strong>Total</strong></th></tr></thead>';
+        html += '<tbody>';
+        
+        // Module rows
+        apiData.modules.forEach(module => {
+            html += `<tr><td class="sticky-col"><strong>${module}</strong></td>`;
+            
+            let moduleTotal = 0;
+            
+            // Iterate through each week's data
+            apiData.data.forEach((weekData, weekIndex) => {
+                const hours = weekData[module] || 0;
+                moduleTotal += hours;
+                
+                const cellClass = hours > 0 ? 'table-success text-center' : 'text-center text-muted';
+                html += `<td class="${cellClass}">${hours > 0 ? hours.toFixed(1) : '-'}</td>`;
+            });
+            
+            html += `<td class="text-center bg-light"><strong>${moduleTotal.toFixed(1)}</strong></td></tr>`;
+        });
+        
+        // Weekly totals row
+        html += '<tr class="table-secondary"><td class="sticky-col"><strong>Week Total</strong></td>';
+        
+        let grandTotal = 0;
+        
+        // Calculate total for each week
+        apiData.data.forEach((weekData, weekIndex) => {
+            let weekTotal = 0;
+            
+            // Sum all module hours for this week
+            apiData.modules.forEach(module => {
+                weekTotal += weekData[module] || 0;
+            });
+            
+            grandTotal += weekTotal;
+            html += `<td class="text-center"><strong>${weekTotal > 0 ? weekTotal.toFixed(1) : '-'}</strong></td>`;
+        });
+        
+        html += `<td class="text-center bg-secondary text-white"><strong>${grandTotal.toFixed(1)}</strong></td></tr>`;
+        html += '</tbody></table></div>';
+        
+        tableContainer.innerHTML = html;
+        
+        console.log('✓ Weekly module table rendered successfully');
+        console.log(`  - ${apiData.modules.length} modules`);
+        console.log(`  - ${apiData.weeks.length} weeks`);
+        console.log(`  - Grand total: ${grandTotal.toFixed(1)} hours`);
+        
+    } catch (error) {
+        console.error('Error loading weekly module table:', error);
+        console.error('Error stack:', error.stack);
+        
+        const tableContainer = document.getElementById('weeklyModuleTableContainer');
+        if (tableContainer) {
+            tableContainer.innerHTML = `
+                <div class="alert alert-danger">
+                    <strong>Error loading weekly module data</strong><br>
+                    ${error.message}
+                </div>
+            `;
+        }
+    }
+}
+
+function formatWeekHeaderShort(weekStart) {
+    try {
+        const date = new Date(weekStart + 'T00:00:00');
+        const month = date.toLocaleString('en-US', { month: 'short' });
+        const day = date.getDate();
+        return `${month} ${day}`;
+    } catch (e) {
+        console.error('Error formatting week header:', weekStart, e);
+        return weekStart;
+    }
+}
+
+
+function renderWeeklyModuleTable(tableData) {
+    const container = document.getElementById('weeklyModuleTableContainer');
+    if (!container) return;
+    
+    const { weeks, modules, data } = tableData;
+    
+    if (!weeks || weeks.length === 0) {
+        container.innerHTML = '<div class="alert alert-info">No weekly data available</div>';
+        return;
+    }
+    
+    const today = new Date();
+    let currentWeekIndex = weeks.findIndex(w => {
+        const start = new Date(w.start);
+        const end = new Date(w.end);
+        return today >= start && today <= end;
+    });
+    
+    if (currentWeekIndex === -1) currentWeekIndex = 0;
+    
+    let html = `
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <button class="btn btn-sm btn-outline-secondary" id="prevWeeks">
+                <i class="fas fa-chevron-left"></i> Previous
+            </button>
+            <span><strong>Viewing weeks ${currentWeekIndex + 1}-${Math.min(currentWeekIndex + 10, weeks.length)} of ${weeks.length}</strong></span>
+            <button class="btn btn-sm btn-outline-secondary" id="nextWeeks">
+                Next <i class="fas fa-chevron-right"></i>
+            </button>
+        </div>
+        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+            <table class="table table-sm table-bordered table-hover">
+                <thead class="table-light sticky-top">
+                    <tr>
+                        <th>Week</th>
+                        ${modules.map(m => `<th class="text-end">${m}</th>`).join('')}
+                        <th class="text-end"><strong>Total</strong></th>
+                    </tr>
+                </thead>
+                <tbody id="weeklyTableBody"></tbody>
+            </table>
+        </div>
+    `;
+    
+    container.innerHTML = html;
+    container.dataset.currentIndex = currentWeekIndex;
+    container.dataset.totalWeeks = weeks.length;
+    
+    renderWeekRows(weeks, modules, data, currentWeekIndex);
+    
+    document.getElementById('prevWeeks').addEventListener('click', () => scrollWeeks(-10));
+    document.getElementById('nextWeeks').addEventListener('click', () => scrollWeeks(10));
+}
+
+function renderWeekRows(weeks, modules, data, startIdx) {
+    const tbody = document.getElementById('weeklyTableBody');
+    if (!tbody) return;
+    
+    const today = new Date();
+    const endIdx = Math.min(startIdx + 10, weeks.length);
+    let html = '';
+    
+    for (let i = startIdx; i < endIdx; i++) {
+        const week = weeks[i];
+        const weekData = data[i];
+        const weekStart = new Date(week.start);
+        const weekEnd = new Date(week.end);
+        const isCurrentWeek = today >= weekStart && today <= weekEnd;
+        
+        const rowTotal = Object.values(weekData).reduce((sum, val) => sum + val, 0);
+        
+        html += `
+            <tr ${isCurrentWeek ? 'class="table-primary"' : ''}>
+                <td>${week.label}</td>
+                ${modules.map(m => `<td class="text-end">${(weekData[m] || 0).toFixed(1)}</td>`).join('')}
+                <td class="text-end"><strong>${rowTotal.toFixed(1)}</strong></td>
+            </tr>
+        `;
+    }
+    
+    tbody.innerHTML = html;
+}
+
+function scrollWeeks(delta) {
+    const container = document.getElementById('weeklyModuleTableContainer');
+    if (!container) return;
+    
+    let currentIndex = parseInt(container.dataset.currentIndex);
+    const totalWeeks = parseInt(container.dataset.totalWeeks);
+    
+    currentIndex = Math.max(0, Math.min(currentIndex + delta, totalWeeks - 1));
+    container.dataset.currentIndex = currentIndex;
+    
+    fetch('/api/weekly-module-hours')
+        .then(r => r.json())
+        .then(tableData => {
+            const { weeks, modules, data } = tableData;
+            renderWeekRows(weeks, modules, data, currentIndex);
+            
+            document.querySelector('.d-flex span').innerHTML = 
+                `<strong>Viewing weeks ${currentIndex + 1}-${Math.min(currentIndex + 10, weeks.length)} of ${weeks.length}</strong>`;
+            
+            document.getElementById('prevWeeks').disabled = currentIndex === 0;
+            document.getElementById('nextWeeks').disabled = currentIndex >= weeks.length - 10;
+        });
+}

@@ -15,9 +15,9 @@ db_manager = AzureSQLDBManager(
     database="Utilisation_tracker_db",
     username="kliqtek-tester",
     password="cl@r1tythr0ughkn0wl3dg3",
-    pool_size=5,
-    max_overflow=2,
-    pool_timeout=30,
+    pool_size=15,
+    max_overflow=5,
+    pool_timeout=60,
     log_level='INFO',
     authentication_method='SqlPassword'
 )
@@ -106,127 +106,301 @@ def calculate_date_range(df):
         'maxDate': max_date.strftime('%Y-%m-%d')
     }
 
-
-def aggregate_hours_by_module(granularity='weekly'):
+def get_date_range_from_request():
     """
-    Aggregate module phase hours by time period.
-    Uses: fact_module_phase_hours, dim_module (lowercase with underscores)
+    Extract and validate date range from request parameters.
+    Defaults to current year if not provided.
+    """
     
-    Args:
-        granularity: str ('weekly', 'monthly', 'quarterly')
-    Returns:
-        dict: {'periods': ['W1', ...], 'modules': [{'moduleName': 'X', 'hours': [...]}, ...]}
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    # Default to current year if not provided
+    if not start_date:
+        start_date = datetime.now().replace(month=1, day=1).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = (datetime.now() + timedelta(days=365)).strftime('%Y-%m-%d')
+    
+    return start_date, end_date
+
+def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=None):
+    """
+    Aggregate module phase hours by time period within date range.
+    Includes ALL periods in the range, even if they have zero hours.
     """
     try:
-        # SQL query based on granularity
-        if granularity == 'weekly':
-            period_expr = "DATEPART(WEEK, h.module_start_date)"
-            period_format = "CONCAT('W', DATEPART(WEEK, h.module_start_date))"
-        elif granularity == 'monthly':
-            period_expr = "FORMAT(h.module_start_date, 'yyyy-MM')"
-            period_format = "FORMAT(h.module_start_date, 'yyyy-MM')"
-        else:  # quarterly
-            period_expr = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
-            period_format = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+        from datetime import datetime, timedelta
         
-        query = f"""
-        SELECT 
-            m.module_name,
-            {period_format} AS period,
-            SUM(h.planned_hours) AS totalhours
-        FROM fact_module_phase_hours h
-        INNER JOIN dim_module m ON h.module_id = m.module_id
-        WHERE h.module_start_date IS NOT NULL 
-            AND h.planned_hours IS NOT NULL
-        GROUP BY m.module_name, {period_expr}, {period_format}
-        ORDER BY m.module_name, {period_expr}
-        """
+        # Use provided dates or default
+        if not start_date:
+            start_date = datetime.now().date()
+        if not end_date:
+            end_date = (datetime.now() + timedelta(days=365)).date()
+        
+        # Convert to datetime objects if they're strings
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        app.logger.info(f"Aggregating by module: {granularity}, {start_date} to {end_date}")
+        
+        # Query data within date range
+        if granularity == 'weekly':
+            query = f"""
+            SELECT
+                module_name,
+                week_start_date,
+                week_end_date,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY module_name, week_start_date, week_end_date
+            ORDER BY week_start_date, module_name
+            """
+        
+        elif granularity == 'monthly':
+            query = f"""
+            SELECT
+                module_name,
+                FORMAT(week_start_date, 'yyyy-MM') AS period,
+                MIN(week_start_date) as period_start,
+                MAX(week_end_date) as period_end,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY module_name, FORMAT(week_start_date, 'yyyy-MM')
+            ORDER BY FORMAT(week_start_date, 'yyyy-MM'), module_name
+            """
+        
+        else:  # quarterly
+            query = f"""
+            SELECT
+                module_name,
+                CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
+                MIN(week_start_date) as period_start,
+                MAX(week_end_date) as period_end,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY module_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
+            ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), module_name
+            """
         
         df = db_manager.execute_custom_query(query)
         
         if df.empty:
-            return {'periods': [], 'modules': []}
+            app.logger.warning("No data returned from aggregate_hours_by_module query")
+            return {
+                'labels': [],
+                'datasets': [],
+                'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
+            }
         
-        # Transform to chart format
-        periods = sorted(df['period'].unique().tolist())
-        modules = []
+        # Generate complete period list (fill gaps with zeros)
+        if granularity == 'weekly':
+            all_periods = generate_week_labels(start_date, end_date)
+        elif granularity == 'monthly':
+            all_periods = generate_month_labels(start_date, end_date)
+        else:
+            all_periods = generate_quarter_labels(start_date, end_date)
         
-        for module_name in df['module_name'].unique():
-            module_df = df[df['module_name'] == module_name]
-            hours_dict = dict(zip(module_df['period'], module_df['totalhours']))
-            hours = [hours_dict.get(p, 0) for p in periods]
+        # Get unique modules
+        modules = sorted(df['module_name'].unique())
+        
+        # Create dataset for each module
+        datasets = []
+        for module in modules:
+            module_data = df[df['module_name'] == module]
             
-            modules.append({
-                'moduleName': module_name,
-                'hours': hours
+            # Map hours to periods
+            hours_by_period = {}
+            for _, row in module_data.iterrows():
+                if granularity == 'weekly':
+                    period_key = row['week_start_date'].strftime('%Y-%m-%d')
+                else:
+                    period_key = row['period']
+                hours_by_period[period_key] = float(row['total_hours'])
+            
+            # Fill in all periods (including zeros)
+            data_values = [hours_by_period.get(period, 0) for period in all_periods]
+            
+            datasets.append({
+                'label': module,
+                'data': data_values,
+                'backgroundColor': get_module_color(module),
+                'borderColor': get_module_color(module),
+                'fill': False
             })
         
-        return {'periods': periods, 'modules': modules}
+        return {
+            'labels': all_periods,
+            'datasets': datasets,
+            'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
+        }
         
     except Exception as e:
         app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}")
-        return {'periods': [], 'modules': []}
+        import traceback
+        traceback.print_exc()
+        return {'labels': [], 'datasets': []}
 
 
-def aggregate_hours_by_project(granularity='weekly'):
+def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=None):
     """
-    Aggregate hours by project over time.
-    Uses: fact_module_phase_hours, dim_project (lowercase with underscores)
-    
-    Args:
-        granularity: str ('weekly', 'monthly', 'quarterly')
-    Returns:
-        dict: {'periods': ['W1', ...], 'projects': [{'projectName': 'X', 'hours': [...]}, ...]}
+    Aggregate module phase hours by project and time period within date range.
+    Always returns a dictionary with labels and datasets.
     """
     try:
-        # SQL query based on granularity
+        from datetime import datetime, timedelta
+        
+        # Use provided dates or default to today onwards
+        if not start_date:
+            start_date = datetime.now().date()
+        if not end_date:
+            end_date = (datetime.now() + timedelta(days=365)).date()
+        
+        # Convert to datetime objects if they're strings
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        print(f"Aggregating by project with granularity: {granularity}, dates: {start_date} to {end_date}")
+        
+        # Use the calendar view with date filtering
         if granularity == 'weekly':
-            period_expr = "DATEPART(WEEK, h.module_start_date)"
-            period_format = "CONCAT('W', DATEPART(WEEK, h.module_start_date))"
+            query = f"""
+            SELECT
+                project_name,
+                week_start_date,
+                week_end_date,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY project_name, week_start_date, week_end_date
+            ORDER BY week_start_date, project_name
+            """
+        
         elif granularity == 'monthly':
-            period_expr = "FORMAT(h.module_start_date, 'yyyy-MM')"
-            period_format = "FORMAT(h.module_start_date, 'yyyy-MM')"
+            query = f"""
+            SELECT
+                project_name,
+                FORMAT(week_start_date, 'yyyy-MM') AS period,
+                MIN(week_start_date) as period_start,
+                MAX(week_end_date) as period_end,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY project_name, FORMAT(week_start_date, 'yyyy-MM')
+            ORDER BY FORMAT(week_start_date, 'yyyy-MM'), project_name
+            """
+        
         else:  # quarterly
-            period_expr = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
-            period_format = "CONCAT(YEAR(h.module_start_date), '-Q', DATEPART(QUARTER, h.module_start_date))"
+            query = f"""
+            SELECT
+                project_name,
+                CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
+                MIN(week_start_date) as period_start,
+                MAX(week_end_date) as period_end,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND planned_hours IS NOT NULL
+            AND project_status = 'Active'
+            GROUP BY project_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
+            ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), project_name
+            """
         
-        query = f"""
-        SELECT 
-            p.project_name,
-            {period_format} AS period,
-            SUM(h.planned_hours) AS totalhours
-        FROM fact_module_phase_hours h
-        INNER JOIN dim_project p ON h.project_id = p.project_id
-        WHERE h.module_start_date IS NOT NULL 
-            AND h.planned_hours IS NOT NULL
-        GROUP BY p.project_name, {period_expr}, {period_format}
-        ORDER BY p.project_name, {period_expr}
-        """
-        
+        # Execute query
         df = db_manager.execute_custom_query(query)
         
         if df.empty:
-            return {'periods': [], 'projects': []}
+            print("No data returned from query")
+            return {
+                'labels': [],
+                'datasets': [],
+                'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
+            }
         
-        # Transform to chart format
-        periods = sorted(df['period'].unique().tolist())
-        projects = []
+        print(f"Query returned {len(df)} rows")
         
-        for project_name in df['project_name'].unique():
-            project_df = df[df['project_name'] == project_name]
-            hours_dict = dict(zip(project_df['period'], project_df['totalhours']))
-            hours = [hours_dict.get(p, 0) for p in periods]
+        # Generate complete period list
+        if granularity == 'weekly':
+            all_periods = generate_week_labels(start_date, end_date)
+        elif granularity == 'monthly':
+            all_periods = generate_month_labels(start_date, end_date)
+        else:
+            all_periods = generate_quarter_labels(start_date, end_date)
+        
+        # Get unique projects
+        projects = sorted(df['project_name'].unique())
+        
+        # Create dataset for each project
+        datasets = []
+        for project in projects:
+            project_data = df[df['project_name'] == project]
             
-            projects.append({
-                'projectName': project_name,
-                'hours': hours
+            # Map hours to periods
+            hours_by_period = {}
+            for _, row in project_data.iterrows():
+                if granularity == 'weekly':
+                    period_key = row['week_start_date'].strftime('%Y-%m-%d')
+                else:
+                    period_key = row['period']
+                hours_by_period[period_key] = float(row['total_hours'])
+            
+            # Fill in all periods (including zeros)
+            data_values = [hours_by_period.get(period, 0) for period in all_periods]
+            
+            datasets.append({
+                'label': project,
+                'data': data_values,
+                'backgroundColor': get_project_color(project),
+                'borderColor': get_project_color(project),
+                'fill': False
             })
         
-        return {'periods': periods, 'projects': projects}
+        print(f"Generated {len(datasets)} datasets with {len(all_periods)} periods each")
+        
+        return {
+            'labels': all_periods,
+            'datasets': datasets,
+            'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
+        }
         
     except Exception as e:
-        app.logger.error(f"Error in aggregate_hours_by_project: {str(e)}")
-        return {'periods': [], 'projects': []}
+        print(f"Error in aggregate_hours_by_project: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # ALWAYS return a dictionary, even on error
+        return {
+            'labels': [],
+            'datasets': [],
+            'dateRange': {'startDate': str(start_date) if start_date else '', 'endDate': str(end_date) if end_date else ''}
+        }
+
+
+def get_project_color(project_name):
+    """Return consistent color for a project"""
+    colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+        '#A8E6CF', '#F06292', '#AED581', '#FFD54F', '#4DD0E1',
+        '#9575CD', '#FF8A65'
+    ]
+    # Hash project name to get consistent color
+    hash_val = sum(ord(c) for c in project_name)
+    return colors[hash_val % len(colors)]
     
 def get_enriched_projects():
     """
@@ -311,32 +485,139 @@ def get_project(project_id):
             'error': str(e)
         }), 500
 
+@app.route('/api/weekly-module-hours')
+def get_weekly_module_hours():
+    """
+    Get aggregated weekly hours by module for all active projects.
+    Returns data structured for a scrollable weekly table.
+    """
+    try:
+        start_date, end_date = get_date_range_from_request()
+
+        query = f"""
+        SELECT
+        week_start_date,
+        week_end_date,
+        module_name,
+        SUM(planned_hours) AS total_hours
+        FROM vw_module_phase_hours_calendar
+        WHERE project_status = 'Active'
+        AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
+        AND week_start_date IS NOT NULL
+        GROUP BY week_start_date, week_end_date, module_name
+        ORDER BY week_start_date, module_name
+        """
+        
+        df = db_manager.execute_custom_query(query)
+        df = df.replace({np.nan: None})
+        
+        if df.empty:
+            return jsonify({
+                'weeks': [],
+                'modules': [],
+                'data': []
+            })
+        
+        # Get unique weeks and modules
+        weeks_df = df[['week_start_date', 'week_end_date']].drop_duplicates().sort_values('week_start_date')
+        modules = sorted(df['module_name'].unique().tolist())
+        
+        # Build the data structure
+        weeks = []
+        data = []
+        
+        for _, week_row in weeks_df.iterrows():
+            week_start = week_row['week_start_date']
+            week_end = week_row['week_end_date']
+            
+            # Format: "Nov 10 - Nov 16, 2025"
+            week_label = f"{week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}"
+            weeks.append({
+                'label': week_label,
+                'start': week_start.isoformat(),
+                'end': week_end.isoformat()
+            })
+            
+            # Get hours for each module in this week
+            week_data = df[df['week_start_date'] == week_start]
+            module_hours = {}
+            for module in modules:
+                module_row = week_data[week_data['module_name'] == module]
+                hours = float(module_row['total_hours'].iloc[0]) if not module_row.empty else 0
+                module_hours[module] = hours
+            
+            data.append(module_hours)
+        
+        return jsonify({
+            'weeks': weeks,
+            'modules': modules,
+            'data': data
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error in get_weekly_module_hours: {str(e)}")
+        return jsonify({
+            'weeks': [],
+            'modules': [],
+            'data': []
+        }), 500
+
 @app.route('/api/timeline-data')
 def get_timeline_data():
     """
     Provides consolidated data for timeline and workload charts.
     """
     try:
-        # 1. Fetch project timeline data
-        project_timeline_query = "SELECT * FROM vw_module_phase_hours_calendar"
+        # Get date range from request parameters
+        start_date, end_date = get_date_range_from_request()
+
+        # 1. Fetch data from vw_module_phase_hours_calendar (NOT fact_project_timeline)
+        project_timeline_query = f"""
+        SELECT
+        project_id,
+        customer_name,
+        project_name,
+        project_status,
+        phase_id,
+        phase_code,
+        phase_name,
+        week_start_date,
+        week_end_date,
+        module_name,
+        planned_hours
+        FROM vw_module_phase_hours_calendar
+        WHERE project_status = 'Active'
+        AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
+        ORDER BY project_id, phase_id, week_start_date
+        """
+        
+        app.logger.info("Executing timeline query...")
         timeline_df = db_manager.execute_custom_query(project_timeline_query)
+        app.logger.info(f"Query returned {len(timeline_df)} rows")
+        
+        if len(timeline_df) > 0:
+            app.logger.info(f"Columns: {timeline_df.columns.tolist()}")
+            app.logger.info(f"First row: {timeline_df.iloc[0].to_dict()}")
+        else:
+            app.logger.warning("Query returned 0 rows!")
+        
         timeline_df = timeline_df.replace({np.nan: None})
         projects = timeline_df.to_dict('records')
 
         # 2. Fetch workload data
-        workload_query = """
-        SELECT 
-            calendar_week_start AS "weekStart",
-            active_projects AS "activeProjects",
-            active_modules AS "activeModules"
+        workload_query = f"""
+        SELECT
+        calendar_week_start AS "weekStart",
+        active_projects AS "activeProjects",
+        active_modules AS "activeModules"
         FROM vw_concurrent_project_workload
-        WHERE calendar_week_start IS NOT NULL
+        WHERE calendar_week_start BETWEEN '{start_date}' AND '{end_date}'
+        AND calendar_week_start IS NOT NULL
         ORDER BY calendar_week_start;
         """
         workload_df = db_manager.execute_custom_query(workload_query)
         workload_df = workload_df.replace({np.nan: None})
 
-        # 3. Structure workload data
         if workload_df.empty:
             workload_data = {"periods": [], "datasets": {"activeProjects": [], "activeModules": []}}
         else:
@@ -348,17 +629,17 @@ def get_timeline_data():
                 }
             }
 
+        # 3. Calculate dateRange from timeline data (use week_start_date and week_end_date)
         date_range = {}
         if not timeline_df.empty and 'week_start_date' in timeline_df.columns:
             min_date = timeline_df['week_start_date'].min()
-            max_date = timeline_df['week_end_date'].max() if 'week_end_date' in timeline_df.columns else timeline_df['week_start_date'].max()
+            max_date = timeline_df['week_end_date'].max()
             
             date_range = {
                 "minDate": min_date.isoformat() if pd.notna(min_date) else None,
                 "maxDate": max_date.isoformat() if pd.notna(max_date) else None
             }
         else:
-            # Default date range if no data
             from datetime import datetime
             today = datetime.now()
             date_range = {
@@ -366,14 +647,19 @@ def get_timeline_data():
                 "maxDate": today.isoformat()
             }
 
+        app.logger.info(f"Returning {len(projects)} project records")
+        app.logger.info(f"Date range: {date_range}")
+
         return jsonify({
             "projects": projects,
             "workload": workload_data,
-            "dateRange": date_range  # Add dateRange to response
+            "dateRange": date_range
         })
 
     except Exception as e:
         app.logger.error(f"Error in get_timeline_data: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         from datetime import datetime
         today = datetime.now()
         return jsonify({
@@ -385,51 +671,128 @@ def get_timeline_data():
 @app.route('/api/dashboard-metrics')
 def get_dashboard_metrics():
     """
-    Get summary metrics for the dashboard cards.
+    Get summary metrics for the dashboard cards filtered by date range overlap.
+    
+    Logic:
+    - Total Projects: Count projects that have module work weeks during the date range
+    - Active Modules: Count modules that have work weeks overlapping the date range
+    - Total Hours: Sum ALL planned hours from weeks that overlap the date range
+    
+    Uses vw_module_phase_hours_calendar which has week-level granularity.
+    A week overlaps if: week_start_date <= end_date AND week_end_date >= start_date
     """
     try:
-        # Get active projects data
-        df = get_enriched_projects()
+        # Get date range from request parameters
+        start_date, end_date = get_date_range_from_request()
         
-        # Calculate metrics
-        total_projects = len(df)
-        total_modules = int(df['moduleCount'].sum()) if not df.empty else 0
-        total_hours = float(df['totalHours'].sum()) if not df.empty else 0
+        app.logger.info(f"Dashboard metrics requested for date range: {start_date} to {end_date}")
         
-        # Calculate average utilization
-        # Assuming 40 hours/week per module, 12 weeks average duration
+        # Use the calendar view which has week_start_date and week_end_date
+        # Check if any weeks overlap with the selected date range
+        query = f"""
+        SELECT
+            COUNT(DISTINCT project_id) as total_projects,
+            COUNT(DISTINCT module_id) as total_modules,
+            COALESCE(SUM(planned_hours), 0) as total_hours
+        FROM vw_module_phase_hours_calendar
+        WHERE project_status = 'Active'
+        AND week_start_date <= '{end_date}'
+        AND week_end_date >= '{start_date}'
+        AND planned_hours IS NOT NULL
+        """
+        
+        app.logger.info(f"Executing metrics query for date range: {start_date} to {end_date}")
+        df = db_manager.execute_custom_query(query)
+        
+        if df.empty:
+            app.logger.warning("No data returned from metrics query")
+            return jsonify({
+                'totalProjects': 0,
+                'activeModules': 0,
+                'totalHours': 0,
+                'averageUtilization': 0
+            })
+        
+        # Extract metrics with null safety
+        total_projects = int(df['total_projects'].iloc[0]) if pd.notna(df['total_projects'].iloc[0]) else 0
+        total_modules = int(df['total_modules'].iloc[0]) if pd.notna(df['total_modules'].iloc[0]) else 0
+        total_hours = float(df['total_hours'].iloc[0]) if pd.notna(df['total_hours'].iloc[0]) else 0
+        
+        # Calculate average utilization (placeholder logic)
+        # You may want to adjust this based on your business rules
         expected_hours = total_modules * 40 * 12 if total_modules > 0 else 1
         avg_utilization = round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0
+        
+        app.logger.info(f"Metrics calculated - Projects: {total_projects}, Modules: {total_modules}, Hours: {total_hours:.2f}")
         
         return jsonify({
             'totalProjects': total_projects,
             'activeModules': total_modules,
-            'totalHours': total_hours,
+            'totalHours': round(total_hours, 2),
             'averageUtilization': avg_utilization
         })
         
     except Exception as e:
         app.logger.error(f"Error in get_dashboard_metrics: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({
             'totalProjects': 0,
             'activeModules': 0,
             'totalHours': 0,
             'averageUtilization': 0
         }), 500
+
     
 @app.route('/api/module-utilization')
 def get_module_utilization():
-    """Module hours aggregation for charts"""
-    granularity = request.args.get('granularity', 'weekly')
-    view = request.args.get('view', 'by-project')
-    
-    # Custom aggregation based on parameters
-    if view == 'by-project':
-        data = aggregate_hours_by_project(granularity)
-    else:
-        data = aggregate_hours_by_module(granularity)
-    
-    return jsonify(data)
+    """Module hours aggregation for charts with complete date range"""
+    try:
+        granularity = request.args.get('granularity', 'weekly')
+        view = request.args.get('view', 'by-project')
+        
+        # Get date range from request
+        start_date, end_date = get_date_range_from_request()
+        
+        app.logger.info(f"Module utilization requested: granularity={granularity}, view={view}, dates={start_date} to {end_date}")
+        
+        # Custom aggregation based on parameters
+        if view == 'by-project':
+            data = aggregate_hours_by_project(granularity, start_date, end_date)
+        else:
+            data = aggregate_hours_by_module(granularity, start_date, end_date)
+        
+        # Ensure data is a dictionary (handle None case)
+        if data is None:
+            app.logger.warning("Aggregation function returned None, using empty dataset")
+            data = {
+                'labels': [],
+                'datasets': [],
+                'dateRange': {
+                    'startDate': start_date,
+                    'endDate': end_date
+                }
+            }
+        else:
+            # Add date range to response for frontend to use
+            if 'dateRange' not in data:
+                data['dateRange'] = {
+                    'startDate': start_date,
+                    'endDate': end_date
+                }
+        
+        return jsonify(data)
+        
+    except Exception as e:
+        app.logger.error(f"Error in get_module_utilization: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({
+            'error': str(e),
+            'labels': [],
+            'datasets': [],
+            'dateRange': {'startDate': '', 'endDate': ''}
+        }), 500
 
 @app.route('/api/conflicts')
 def get_conflicts():
@@ -478,11 +841,6 @@ def transform_to_timeline_format(df):
         'projects': list(projects.values()),
         'dateRange': calculate_date_range(df)
     }
-
-def aggregate_hours_by_project(granularity):
-    """Aggregate module hours by project over time"""
-    # Complex aggregation query based on granularity
-    pass
 
 def detect_weekly_conflicts(week_number):
     """Identify modules with >70% utilization in specific week"""
@@ -822,6 +1180,69 @@ def validate_data():
             'error': f'Validation error: {str(e)}'
         }), 500
 
+def generate_week_labels(start_date, end_date):
+    """Generate list of all week start dates between start and end"""
+    from datetime import timedelta
+    
+    weeks = []
+    current = start_date
+    
+    # Find the Monday of the week containing start_date
+    days_since_monday = current.weekday()
+    current = current - timedelta(days=days_since_monday)
+    
+    while current <= end_date:
+        weeks.append(current.strftime('%Y-%m-%d'))
+        current += timedelta(days=7)
+    
+    return weeks
+
+def generate_month_labels(start_date, end_date):
+    """Generate list of all months between start and end"""
+    from datetime import datetime
+    
+    months = []
+    current = datetime(start_date.year, start_date.month, 1).date()
+    end_month = datetime(end_date.year, end_date.month, 1).date()
+    
+    while current <= end_month:
+        months.append(current.strftime('%Y-%m'))
+        # Move to next month
+        if current.month == 12:
+            current = datetime(current.year + 1, 1, 1).date()
+        else:
+            current = datetime(current.year, current.month + 1, 1).date()
+    
+    return months
+
+def generate_quarter_labels(start_date, end_date):
+    """Generate list of all quarters between start and end"""
+    quarters = []
+    
+    start_quarter = (start_date.year, (start_date.month - 1) // 3 + 1)
+    end_quarter = (end_date.year, (end_date.month - 1) // 3 + 1)
+    
+    current = start_quarter
+    while current <= end_quarter:
+        quarters.append(f"{current[0]}-Q{current[1]}")
+        
+        # Move to next quarter
+        if current[1] == 4:
+            current = (current[0] + 1, 1)
+        else:
+            current = (current[0], current[1] + 1)
+    
+    return quarters
+
+def get_module_color(module_name):
+    """Return consistent color for a module"""
+    colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+        '#A8E6CF', '#F06292', '#AED581', '#FFD54F', '#4DD0E1'
+    ]
+    # Hash module name to get consistent color
+    hash_val = sum(ord(c) for c in module_name)
+    return colors[hash_val % len(colors)]
 
 # ===== HELPER FUNCTION FOR CSV SUPPORT =====
 def modify_excel_parser_for_csv(file_path):
@@ -840,7 +1261,6 @@ def modify_excel_parser_for_csv(file_path):
         return extractor
     else:
         return ExcelTableExtractor(file_path)
-
 
 if __name__ == '__main__':
     app.run(debug=True)

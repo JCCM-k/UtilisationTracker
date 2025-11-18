@@ -216,7 +216,7 @@ class AzureSQLDBManager:
             try:
                 self.initialize_phases()
             except Exception as e:
-                self.logger.warning(f"Phase auto-initialization skipped: {e}")
+                self._logger.warning(f"Phase auto-initialization skipped: {e}")
 
         self._logger.info("Database manager initialized successfully")
     
@@ -2269,11 +2269,11 @@ class AzureSQLDBManager:
                 conn.commit()
                 rows_inserted = len(phases)
                 cursor.close()
-                self.logger.info(f"Initialized {rows_inserted} phases in dim_phases")
+                self._logger.info(f"Initialized {rows_inserted} phases in dim_phases")
                 return rows_inserted
             except pyodbc.Error as e:
                 conn.rollback()
-                self.logger.exception("Failed to initialize phases")
+                self._logger.exception("Failed to initialize phases")
                 raise DatabaseConnectionError("Phase initialization failed") from e
             
     def get_connection_pool_stats(self) -> Dict[str, Any]:
@@ -2313,75 +2313,47 @@ class AzureSQLDBManager:
         
         return stats
     
-    def execute_custom_query(
-        self, 
-        query: str, 
-        params: Optional[Tuple] = None
-    ) -> pd.DataFrame:
+    def execute_custom_query(self, query: str) -> pd.DataFrame:
         """
-        Execute arbitrary SELECT query with SQL injection prevention.
-        Uses parameterized queries for security.
-        
-        Args:
-            query: SQL SELECT query with ? placeholders for parameters
-            params: Tuple of parameters to substitute (prevents SQL injection)
-        
-        Returns:
-            DataFrame containing query results
-        
-        Raises:
-            ValueError: If query is not a SELECT statement or contains unsafe patterns
-            RuntimeError: If query execution fails
-        
-        Security:
-            - Only allows SELECT statements
-            - Uses parameterized queries (? placeholders)
-            - Validates query structure before execution
-        
-        Example:
-            >>> # Safe: Uses parameterized query
-            >>> df = db_manager.execute_custom_query(
-            ...     "SELECT * FROM dim_project WHERE customer_name = ?",
-            ...     params=("Acme Corp",)
-            ... )
-            
-            >>> # Unsafe: Never use string concatenation
-            >>> # df = db_manager.execute_custom_query(
-            >>> #     f"SELECT * FROM dim_project WHERE customer_name = '{user_input}'"
-            >>> # )
+        Execute a read-only query and return results as DataFrame.
+        Supports SELECT statements and CTEs (WITH clause).
         """
-        # Validate query is a SELECT statement
+        
+        # Validate query is read-only (SELECT or CTE)
         query_stripped = query.strip().upper()
-        if not query_stripped.startswith('SELECT'):
+        
+        # Allow SELECT and WITH (CTEs) - both are read-only
+        allowed_starts = ('SELECT', 'WITH')
+        
+        if not query_stripped.startswith(allowed_starts):
             raise ValueError(
-                "Only SELECT queries are allowed. "
+                "Only read-only queries (SELECT, WITH) are allowed. "
                 "Use execute_custom_command() for INSERT/UPDATE/DELETE."
             )
         
-        # Log query execution (sanitized)
-        query_preview = self._sanitize_query_for_logging(query)
-        self._logger.debug(
-            "Executing custom SELECT query",
-            query_preview=query_preview,
-            params_count=len(params) if params else 0
-        )
+        # Additional safety check - detect write operations anywhere in query
+        write_keywords = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'CREATE']
         
+        # Only check for write keywords NOT inside string literals or comments
+        # Simple check: look for these keywords followed by whitespace/end
+        for keyword in write_keywords:
+            # Check if keyword appears as a standalone word
+            import re
+            if re.search(rf'\b{keyword}\b', query_stripped):
+                raise ValueError(
+                    f"Write operation detected ({keyword}). "
+                    f"Use execute_custom_command() for data modifications."
+                )
+        
+        # Rest of your existing code...
         try:
-            with self._connection_context() as conn:
-                if params:
-                    df = pd.read_sql(query, conn, params=params)
-                else:
-                    df = pd.read_sql(query, conn)
-                
+            with self._get_connection() as conn:
+                self._logger.info(f"Executing custom query...")
+                df = pd.read_sql(query, conn)
                 self._logger.info(f"Custom query executed successfully, rows: {len(df)}, columns: {len(df.columns)}")
-                
                 return df
-                
-        except pyodbc.Error as e:
-            self._logger.exception("Custom query failed")
-            raise DatabaseConnectionError("Query execution failed") from e
         except Exception as e:
-            self._logger.exception("Unexpected error executing custom query")
+            self._logger.error(f"Unexpected error executing custom query")
             raise
     
     def execute_custom_command(

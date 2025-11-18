@@ -234,21 +234,26 @@
         </div>
     </div>
     
-    <!-- Module Utilization Charts -->
-    <div class="row mb-4">
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0">Weekly Hours by Project</h5>
-                </div>
-                <div class="card-body">
-                    <div class="chart-container">
-                        <canvas id="stackedBarChart"></canvas>
+    <!-- Weekly Module Hours Table -->
+    <div class="col-xl-12 col-lg-12">
+        <div class="card shadow mb-4">
+            <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                <h6 class="m-0 font-weight-bold text-primary">Weekly Hours by Module</h6>
+            </div>
+            <div class="card-body">
+                <div id="weeklyModuleTableContainer">
+                    <div class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-6">
+    </div>
+
+    <!-- Module Utilization Charts -->
+        <div class="col-xl-12 col-lg-12">
             <div class="card">
                 <div class="card-header">
                     <h5 class="mb-0">Module Hours Over Time</h5>
