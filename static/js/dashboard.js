@@ -90,36 +90,97 @@ function attachEventListeners() {
 // ============================================================================
 
 async function loadDashboardData() {
-    showLoading(true);
-    
     try {
-        const [projects, timelineData] = await Promise.all([
-            fetchProjects(),
-            fetchTimelineData()
+        // Fetch all data in parallel for better performance
+        const [timelineResponse, projectsResponse, metricsResponse] = await Promise.all([
+            fetch('/api/timeline-data'),
+            fetch('/api/projects'),
+            fetch('/api/dashboard-metrics')
         ]);
-        
-        allProjects = projects;
-        allTimelineData = timelineData;
-        
-        populateMetrics(projects);
-        populateProjectFilter(projects);
-        populateProjectsTable(projects);
-        
-        // Add null check
-        if (timelineData?.projects?.length > 0) {
-            timelineInstance = new ProjectTimeline('timelineCanvas', timelineData);
+
+        if (!timelineResponse.ok) throw new Error(`Timeline API Error: ${timelineResponse.statusText}`);
+        if (!projectsResponse.ok) throw new Error(`Projects API Error: ${projectsResponse.statusText}`);
+        if (!metricsResponse.ok) throw new Error(`Metrics API Error: ${metricsResponse.statusText}`);
+
+        allTimelineData = await timelineResponse.json();
+        const projectsList = await projectsResponse.json();
+        const metrics = await metricsResponse.json();
+
+        // Update metrics cards
+        updateMetrics(metrics);
+
+        // Populate projects table with the CORRECT data (projectsList, not timeline data)
+        populateProjectsTable(projectsList);
+        populateProjectFilter(projectsList);
+
+        // Try to create timeline only if we have valid data
+        if (allTimelineData && 
+            allTimelineData.projects && 
+            allTimelineData.projects.length > 0 &&
+            allTimelineData.dateRange &&
+            allTimelineData.dateRange.minDate) {
+            
+            try {
+                timelineInstance = new ProjectTimeline(
+                    'timelineCanvas',
+                    allTimelineData,
+                    {
+                        granularity: 'weekly',
+                        onProjectClick: (project, phase) => {
+                            console.log('Project clicked:', project, phase);
+                        }
+                    }
+                );
+            } catch (timelineError) {
+                console.error("Timeline initialization failed:", timelineError);
+                const canvas = document.getElementById('timelineCanvas');
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.textAlign = 'center';
+                    ctx.fillStyle = '#888';
+                    ctx.fillText('Timeline could not be displayed', canvas.width / 2, canvas.height / 2);
+                }
+            }
         } else {
-            showNoDataMessage();
+            console.warn("No valid timeline data. Skipping timeline rendering.");
         }
-        
+
+        // Load charts
         await loadCharts();
-        
-        console.log('Dashboard loaded successfully');
+
     } catch (error) {
-        console.error('Error loading dashboard:', error);
-        showError('Failed to load dashboard data: ' + error.message);
-    } finally {
-        showLoading(false);
+        console.error("Fatal error loading dashboard:", error);
+        const tableBody = document.querySelector('#projectsTable tbody');
+        if (tableBody) {
+            tableBody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading data. Please refresh.</td></tr>';
+        }
+    }
+}
+
+function updateMetrics(metrics) {
+    // Update Total Projects
+    const totalProjectsEl = document.getElementById('totalProjects');
+    if (totalProjectsEl) {
+        totalProjectsEl.textContent = metrics.totalProjects || 0;
+    }
+
+    // Update Active Modules
+    const activeModulesEl = document.getElementById('activeModules');
+    if (activeModulesEl) {
+        activeModulesEl.textContent = metrics.activeModules || 0;
+    }
+
+    // Update Average Utilization
+    const avgUtilizationEl = document.getElementById('averageUtilization');
+    if (avgUtilizationEl) {
+        avgUtilizationEl.textContent = `${metrics.averageUtilization || 0}%`;
+    }
+
+    // Update Total Hours
+    const totalHoursEl = document.getElementById('totalHours');
+    if (totalHoursEl) {
+        totalHoursEl.textContent = Math.round(metrics.totalHours || 0);
     }
 }
 
@@ -271,273 +332,6 @@ function filterTimelineByProject(projectId) {
 }
 
 // ============================================================================
-// TIMELINE VISUALIZATION CLASS
-// ============================================================================
-
-class ProjectTimeline {
-    constructor(canvasId, data) {
-        this.canvas = document.getElementById(canvasId);
-        this.ctx = this.canvas.getContext('2d');
-        this.data = data;
-        this.granularity = 'weekly';
-        this.filteredProjectIds = null;
-        
-        this.setupCanvas();
-        this.calculateDimensions();
-        this.render();
-        this.attachEventListeners();
-    }
-    
-    setupCanvas() {
-        const container = this.canvas.parentElement;
-        this.canvas.width = container.offsetWidth - 40;
-        this.canvas.height = Math.max(400, this.data.projects.length * 50 + 150);
-    }
-    
-    calculateDimensions() {
-        this.padding = { top: 60, right: 20, bottom: 40, left: 250 };
-        this.plotWidth = this.canvas.width - this.padding.left - this.padding.right;
-        this.plotHeight = this.canvas.height - this.padding.top - this.padding.bottom;
-        this.rowHeight = 40;
-        
-        // Calculate time range
-        this.startDate = new Date(this.data.dateRange.minDate);
-        this.endDate = new Date(this.data.dateRange.maxDate);
-        this.totalDays = Math.ceil((this.endDate - this.startDate) / (1000 * 60 * 60 * 24));
-    }
-    
-    render() {
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
-        this.drawTimeAxis();
-        this.drawProjectBars();
-        this.drawGridLines();
-    }
-    
-    drawTimeAxis() {
-        const periods = this.getTimePeriods();
-        const periodWidth = this.plotWidth / periods.length;
-        
-        this.ctx.font = 'bold 14px sans-serif';
-        this.ctx.fillStyle = '#333';
-        this.ctx.textAlign = 'center';
-        
-        periods.forEach((period, index) => {
-            const x = this.padding.left + (index * periodWidth) + (periodWidth / 2);
-            const y = this.padding.top - 10;
-            
-            this.ctx.fillText(period.label, x, y);
-        });
-        
-        // Draw axis line
-        this.ctx.beginPath();
-        this.ctx.moveTo(this.padding.left, this.padding.top);
-        this.ctx.lineTo(this.padding.left + this.plotWidth, this.padding.top);
-        this.ctx.strokeStyle = '#333';
-        this.ctx.lineWidth = 2;
-        this.ctx.stroke();
-    }
-    
-    getTimePeriods() {
-        const periods = [];
-        let currentDate = new Date(this.startDate);
-        
-        if (this.granularity === 'weekly') {
-            while (currentDate <= this.endDate) {
-                const weekNum = this.getWeekNumber(currentDate);
-                periods.push({
-                    label: `W${weekNum}`,
-                    date: new Date(currentDate)
-                });
-                currentDate.setDate(currentDate.getDate() + 7);
-            }
-        } else if (this.granularity === 'monthly') {
-            while (currentDate <= this.endDate) {
-                periods.push({
-                    label: currentDate.toLocaleDateString('en-US', { month: 'short' }),
-                    date: new Date(currentDate)
-                });
-                currentDate.setMonth(currentDate.getMonth() + 1);
-            }
-        } else if (this.granularity === 'quarterly') {
-            while (currentDate <= this.endDate) {
-                const quarter = Math.floor(currentDate.getMonth() / 3) + 1;
-                periods.push({
-                    label: `Q${quarter} ${currentDate.getFullYear()}`,
-                    date: new Date(currentDate)
-                });
-                currentDate.setMonth(currentDate.getMonth() + 3);
-            }
-        }
-        
-        return periods;
-    }
-    
-    drawGridLines() {
-        const periods = this.getTimePeriods();
-        const periodWidth = this.plotWidth / periods.length;
-        
-        this.ctx.strokeStyle = '#E0E0E0';
-        this.ctx.lineWidth = 1;
-        
-        for (let i = 0; i <= periods.length; i++) {
-            const x = this.padding.left + (i * periodWidth);
-            
-            this.ctx.beginPath();
-            this.ctx.moveTo(x, this.padding.top);
-            this.ctx.lineTo(x, this.padding.top + this.plotHeight);
-            this.ctx.stroke();
-        }
-    }
-    
-    drawProjectBars() {
-        const projects = this.getFilteredProjects();
-        
-        projects.forEach((project, index) => {
-            const y = this.padding.top + (index * this.rowHeight) + 10;
-            
-            // Draw project label
-            this.ctx.font = '13px sans-serif';
-            this.ctx.fillStyle = '#333';
-            this.ctx.textAlign = 'left';
-            this.ctx.fillText(
-                this.truncateText(project.projectName, 30),
-                10,
-                y + 20
-            );
-            
-            // Draw phase bars
-            if (project.phases) {
-                project.phases.forEach(phase => {
-                    this.drawPhaseBar(phase, y);
-                });
-            }
-        });
-    }
-    
-    drawPhaseBar(phase, y) {
-        const startX = this.dateToX(new Date(phase.startDate));
-        const endX = this.dateToX(new Date(phase.endDate));
-        const width = endX - startX;
-        
-        if (width < 1) return; // Skip if too small
-        
-        // Draw bar
-        this.ctx.fillStyle = PHASE_COLORS[phase.phase] || '#CCCCCC';
-        this.ctx.fillRect(startX, y, width, 30);
-        
-        // Draw border
-        this.ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-        this.ctx.lineWidth = 1;
-        this.ctx.strokeRect(startX, y, width, 30);
-        
-        // Draw phase label if wide enough
-        if (width > 40) {
-            this.ctx.fillStyle = '#FFF';
-            this.ctx.font = 'bold 11px sans-serif';
-            this.ctx.textAlign = 'center';
-            this.ctx.fillText(phase.phase, startX + (width / 2), y + 19);
-        }
-    }
-    
-    dateToX(date) {
-        const daysSinceStart = Math.ceil((date - this.startDate) / (1000 * 60 * 60 * 24));
-        const ratio = daysSinceStart / this.totalDays;
-        return this.padding.left + (ratio * this.plotWidth);
-    }
-    
-    xToDate(x) {
-        const relativeX = x - this.padding.left;
-        const ratio = relativeX / this.plotWidth;
-        const days = ratio * this.totalDays;
-        const date = new Date(this.startDate);
-        date.setDate(date.getDate() + Math.floor(days));
-        return date;
-    }
-    
-    getFilteredProjects() {
-        if (this.filteredProjectIds) {
-            return this.data.projects.filter(p => 
-                this.filteredProjectIds.includes(p.projectId)
-            );
-        }
-        return this.data.projects;
-    }
-    
-    attachEventListeners() {
-        this.canvas.addEventListener('click', (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            // Check if click is in plot area
-            if (x >= this.padding.left && x <= this.padding.left + this.plotWidth &&
-                y >= this.padding.top && y <= this.padding.top + this.plotHeight) {
-                
-                const clickedDate = this.xToDate(x);
-                this.onDateClick(clickedDate);
-            }
-        });
-        
-        // Tooltip on hover
-        this.canvas.addEventListener('mousemove', (e) => {
-            const rect = this.canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            this.canvas.style.cursor = 
-                (x >= this.padding.left && x <= this.padding.left + this.plotWidth) 
-                ? 'pointer' : 'default';
-        });
-    }
-    
-    async onDateClick(date) {
-        console.log('Timeline clicked:', date);
-        const weekNum = this.getWeekNumber(date);
-        await showModuleDrillDown(date, weekNum);
-    }
-    
-    setGranularity(granularity) {
-        this.granularity = granularity;
-        this.render();
-    }
-    
-    filterByProject(projectId) {
-        this.filteredProjectIds = [projectId];
-        this.render();
-    }
-    
-    showAllProjects() {
-        this.filteredProjectIds = null;
-        this.render();
-    }
-    
-    updateDateRange() {
-        const startDate = document.getElementById('startDate').valueAsDate;
-        const endDate = document.getElementById('endDate').valueAsDate;
-        
-        if (startDate && endDate) {
-            this.startDate = startDate;
-            this.endDate = endDate;
-            this.totalDays = Math.ceil((this.endDate - this.startDate) / (1000 * 60 * 60 * 24));
-            this.render();
-        }
-    }
-    
-    getWeekNumber(date) {
-        const d = new Date(date);
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-        const yearStart = new Date(d.getFullYear(), 0, 1);
-        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-    }
-    
-    truncateText(text, maxLength) {
-        return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
-    }
-}
-
-// ============================================================================
 // CHARTS
 // ============================================================================
 
@@ -548,59 +342,55 @@ async function loadCharts() {
     ]);
 }
 
-async function loadStackedBarChart() {
-    try {
-        const granularity = document.querySelector('input[name="timeGranularity"]:checked').value;
-        const response = await fetch(`/api/module-utilization?granularity=${granularity}&view=by-project`);
-        const data = await response.json();
-        
-        if (stackedBarChartInstance) {
-            stackedBarChartInstance.destroy();
-        }
-        
-        const ctx = document.getElementById('stackedBarChart').getContext('2d');
-        stackedBarChartInstance = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: data.periods || [],
-                datasets: (data.projects || []).map((proj, idx) => ({
-                    label: proj.projectName,
-                    data: proj.hours,
-                    backgroundColor: PROJECT_COLORS[idx % PROJECT_COLORS.length]
-                }))
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { 
-                        stacked: true,
-                        title: { display: true, text: 'Time Period' }
-                    },
-                    y: { 
-                        stacked: true,
-                        beginAtZero: true,
-                        title: { display: true, text: 'Hours' }
-                    }
-                },
-                plugins: {
-                    legend: { 
-                        position: 'bottom',
-                        labels: { boxWidth: 12 }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: (context) => {
-                                return `${context.dataset.label}: ${context.parsed.y} hours`;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    } catch (error) {
-        console.error('Error loading stacked bar chart:', error);
+function loadStackedBarChart(data) {
+    const canvas = document.getElementById('stackedBarChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    if (stackedBarChartInstance) {
+        stackedBarChartInstance.destroy();
     }
+
+    // Guard clause: If data or its periods are missing/empty, show a message and stop.
+    if (!data || !data.periods || data.livedata.periods.length === 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#888';
+        ctx.fillText('No workload data available', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+
+    const labels = data.periods.map(p => {
+        const startDate = new Date(p.weekStart);
+        return `${startDate.getDate().toString().padStart(2, '0')}/${(startDate.getMonth() + 1).toString().padStart(2, '0')}`;
+    });
+
+    stackedBarChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Active Projects',
+                    data: data.datasets.activeProjects,
+                    backgroundColor: 'rgba(75, 192, 192, 0.7)'
+                },
+                {
+                    label: 'Active Modules',
+                    data: data.datasets.activeModules,
+                    backgroundColor: 'rgba(255, 159, 64, 0.7)'
+                }
+            ]
+        },
+        options: {
+            scales: {
+                x: { stacked: true },
+                y: { stacked: true, beginAtZero: true }
+            },
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
 }
 
 async function loadLineChart() {

@@ -12,11 +12,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const selector = document.getElementById('projectSelector');
         
         projects.forEach(proj => {
-            console.log('Adding project:', proj.project_id, proj.customer_name);  // ← DEBUG
+            // Fixed: Use camelCase properties that match the Python response
+            console.log('Adding project:', proj.projectId, proj.customerName);  // ← DEBUG
             
             const option = document.createElement('option');
-            option.value = proj.project_id;
-            option.textContent = `${proj.customer_name} - ${proj.project_name}`;
+            option.value = proj.projectId;  // Changed from proj.project_id
+            option.textContent = `${proj.customerName} - ${proj.projectName}`;  // Changed from snake_case
             selector.appendChild(option);
         });
         

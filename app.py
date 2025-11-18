@@ -6,6 +6,7 @@ from excel_parser import ExcelTableExtractor
 import pandas as pd
 import io 
 from datetime import datetime, timedelta
+import numpy as np
 
 app = Flask(__name__)
 global db_manager
@@ -312,41 +313,110 @@ def get_project(project_id):
 
 @app.route('/api/timeline-data')
 def get_timeline_data():
-    """Get timeline data for Gantt chart visualization"""
+    """
+    Provides consolidated data for timeline and workload charts.
+    """
     try:
-        query = """
-        SELECT
-            p.project_id,
-            p.customer_name,
-            p.project_name,
-            p.project_start_date,
-            ph.phase_name,
-            ph.phase_code,
-            t.duration_weeks,
-            t.start_date,
-            t.end_date
-        FROM dim_project p
-        JOIN fact_project_timeline t ON p.project_id = t.project_id
-        JOIN dim_phases ph ON t.phase_id = ph.phase_id
-        ORDER BY p.project_id, ph.default_sequence
+        # 1. Fetch project timeline data
+        project_timeline_query = "SELECT * FROM vw_module_phase_hours_calendar"
+        timeline_df = db_manager.execute_custom_query(project_timeline_query)
+        timeline_df = timeline_df.replace({np.nan: None})
+        projects = timeline_df.to_dict('records')
+
+        # 2. Fetch workload data
+        workload_query = """
+        SELECT 
+            calendar_week_start AS "weekStart",
+            active_projects AS "activeProjects",
+            active_modules AS "activeModules"
+        FROM vw_concurrent_project_workload
+        WHERE calendar_week_start IS NOT NULL
+        ORDER BY calendar_week_start;
         """
-        
-        df = db_manager.execute_custom_query(query)
-        
-        # Replace NaN with None for JSON compatibility
-        result = df.where(pd.notna(df), None).to_dict('records')
-        
+        workload_df = db_manager.execute_custom_query(workload_query)
+        workload_df = workload_df.replace({np.nan: None})
+
+        # 3. Structure workload data
+        if workload_df.empty:
+            workload_data = {"periods": [], "datasets": {"activeProjects": [], "activeModules": []}}
+        else:
+            workload_data = {
+                "periods": workload_df[['weekStart']].to_dict('records'),
+                "datasets": {
+                    "activeProjects": workload_df['activeProjects'].tolist(),
+                    "activeModules": workload_df['activeModules'].tolist()
+                }
+            }
+
+        date_range = {}
+        if not timeline_df.empty and 'week_start_date' in timeline_df.columns:
+            min_date = timeline_df['week_start_date'].min()
+            max_date = timeline_df['week_end_date'].max() if 'week_end_date' in timeline_df.columns else timeline_df['week_start_date'].max()
+            
+            date_range = {
+                "minDate": min_date.isoformat() if pd.notna(min_date) else None,
+                "maxDate": max_date.isoformat() if pd.notna(max_date) else None
+            }
+        else:
+            # Default date range if no data
+            from datetime import datetime
+            today = datetime.now()
+            date_range = {
+                "minDate": today.isoformat(),
+                "maxDate": today.isoformat()
+            }
+
         return jsonify({
-            'success': True,
-            'data': result
+            "projects": projects,
+            "workload": workload_data,
+            "dateRange": date_range  # Add dateRange to response
         })
+
     except Exception as e:
-        app.logger.error(f"Error fetching timeline data: {str(e)}")
+        app.logger.error(f"Error in get_timeline_data: {str(e)}")
+        from datetime import datetime
+        today = datetime.now()
         return jsonify({
-            'success': False,
-            'error': str(e)
+            "projects": [],
+            "workload": {"periods": [], "datasets": {"activeProjects": [], "activeModules": []}},
+            "dateRange": {"minDate": today.isoformat(), "maxDate": today.isoformat()}
         }), 500
 
+@app.route('/api/dashboard-metrics')
+def get_dashboard_metrics():
+    """
+    Get summary metrics for the dashboard cards.
+    """
+    try:
+        # Get active projects data
+        df = get_enriched_projects()
+        
+        # Calculate metrics
+        total_projects = len(df)
+        total_modules = int(df['moduleCount'].sum()) if not df.empty else 0
+        total_hours = float(df['totalHours'].sum()) if not df.empty else 0
+        
+        # Calculate average utilization
+        # Assuming 40 hours/week per module, 12 weeks average duration
+        expected_hours = total_modules * 40 * 12 if total_modules > 0 else 1
+        avg_utilization = round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0
+        
+        return jsonify({
+            'totalProjects': total_projects,
+            'activeModules': total_modules,
+            'totalHours': total_hours,
+            'averageUtilization': avg_utilization
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error in get_dashboard_metrics: {str(e)}")
+        return jsonify({
+            'totalProjects': 0,
+            'activeModules': 0,
+            'totalHours': 0,
+            'averageUtilization': 0
+        }), 500
+    
 @app.route('/api/module-utilization')
 def get_module_utilization():
     """Module hours aggregation for charts"""
