@@ -1175,40 +1175,48 @@ def transform_to_timeline_format(df):
         'dateRange': calculate_date_range(df)
     }
 
-@app.route('/api/update-project/<int:project_id>', methods=['POST'])
+@app.route('/api/projects/<int:project_id>', methods=['PUT'])
 def update_project_metadata(project_id):
+    """Update project metadata (customer, name, start date, status)"""
     try:
-        changes = request.json
+        data = request.json
+        app.logger.info(f"Updating project {project_id} with data: {data}")
         
-        # Update project details
+        # Extract and validate data
+        customer_id = int(data.get('customerId'))
+        project_name = data.get('projectName', '').strip()
+        start_date = data.get('startDate')
+        status = data.get('status', 'Active')
+        
+        # Validate required fields
+        if not all([customer_id, project_name, start_date]):
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        
+        # Check for duplicate project name (excluding current project)
+        existing = db_manager.execute_custom_query(
+            f"SELECT 1 FROM dim_project WHERE project_name='{project_name}' AND project_id!={project_id}"
+        )
+        if existing.shape[0] > 0:
+            return jsonify({'success': False, 'error': 'Project name already exists'}), 400
+        
+        # Update the project
         db_manager.execute_custom_command(
-            "UPDATE dim_project SET customer_id=?, project_name=?, project_start_date=? WHERE project_id=?",
-            params=(
-                changes['projectDetails']['customerid'],
-                changes['projectDetails']['projectname'],
-                changes['projectDetails']['projectstartdate'],
-                project_id
-            )
+            f"UPDATE dim_project SET "
+            f"customer_id={customer_id}, "
+            f"project_name='{project_name}', "
+            f"project_start_date='{start_date}', "
+            f"project_status='{status}', "
+            f"modified_date=GETDATE() "
+            f"WHERE project_id={project_id}"
         )
         
-        # Replace cost analysis
-        df_cost = pd.DataFrame(changes['costAnalysis'])
-        db_manager.replace_cost_analysis(project_id, df_cost)
+        return jsonify({'success': True, 'message': 'Project updated successfully'})
         
-        # Replace hours analysis
-        df_hours = pd.DataFrame(changes['hoursAnalysis'])
-        db_manager.replace_hours_analysis(project_id, df_hours)
-        
-        # Replace timeline
-        df_timeline = pd.DataFrame(changes['timeline'])
-        db_manager.replace_timeline(project_id, df_timeline)
-        
-        # Rate calculation would use similar replace method
-        
-        return jsonify({'success': True})
-        
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid customer ID'}), 400
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        app.logger.error(f"Error updating project {project_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
 def upload():
