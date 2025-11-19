@@ -32,13 +32,135 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-from datetime import datetime, timedelta
-import pandas as pd
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+def validate_and_convert_data(df, table_type):
+    """
+    Validate and convert DataFrame columns to correct types based on SQL schema.
+    """
+    if df is None or df.empty:
+        return df
+    
+    df_clean = df.copy()
+    
+    try:
+        if table_type == 'cost':
+            # Convert to numeric
+            df_clean['weight'] = pd.to_numeric(df_clean['weight'], errors='coerce')
+            df_clean['cost'] = pd.to_numeric(df_clean['cost'], errors='coerce')
+            
+            # Remove rows with NaN values in REQUIRED fields
+            df_clean = df_clean.dropna(subset=['weight', 'cost'])
+            
+            if df_clean.empty:
+                raise ValueError("No valid numeric data for cost analysis")
+            
+            # Validate constraints
+            if (df_clean['weight'] < 0).any() or (df_clean['weight'] > 1).any():
+                invalid_rows = df_clean[(df_clean['weight'] < 0) | (df_clean['weight'] > 1)]
+                raise ValueError(f"Weight must be between 0 and 1. Invalid values: {invalid_rows['weight'].tolist()}")
+            
+            if (df_clean['cost'] < 0).any():
+                raise ValueError("Cost must be non-negative")
+            
+            df_clean['payment_milestone'] = df_clean['payment_milestone'].astype(str)
+            
+        elif table_type == 'hours':
+            # Log initial state
+            app.logger.info(f"Hours data before filtering: {len(df_clean)} rows")
+            app.logger.info(f"Hours sample row: {df_clean.iloc[0].to_dict() if len(df_clean) > 0 else 'empty'}")
+            
+            # Filter out summary/total rows BEFORE validation
+            if 'module_name' in df_clean.columns:
+                df_clean['module_name'] = df_clean['module_name'].astype(str)
+                app.logger.info(f"Module names: {df_clean['module_name'].tolist()}")
+                
+                # Remove summary rows
+                summary_keywords = ['SUMS', 'TOTAL', 'WEEKS EFFORT', 'SUBTOTAL']
+                df_clean = df_clean[~df_clean['module_name'].str.upper().isin(summary_keywords)]
+                app.logger.info(f"After filtering summary rows: {len(df_clean)} rows remaining")
+            
+            if df_clean.empty:
+                raise ValueError("No valid data rows (only summary rows found)")
+            
+            # Convert numeric columns
+            numeric_cols = ['weight', 'p_plus_m', 'plan', 'a_plus_c', 'testing', 'deploy', 'post_go_live', 'total_hours']
+            
+            for col in numeric_cols:
+                if col in df_clean.columns:
+                    app.logger.info(f"Converting column {col}, sample values before: {df_clean[col].head(3).tolist()}")
+                    # Replace empty strings with NaN before conversion
+                    df_clean[col] = df_clean[col].replace('', np.nan)
+                    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                    app.logger.info(f"After conversion, non-null count for {col}: {df_clean[col].notna().sum()}")
+            
+            # Check if we have at least SOME numeric data
+            hour_cols = [c for c in numeric_cols if c in df_clean.columns]
+            has_data = df_clean[hour_cols].notna().any().any()
+            
+            app.logger.info(f"Hour columns checked: {hour_cols}")
+            app.logger.info(f"Has any non-null data: {has_data}")
+            app.logger.info(f"DataFrame after conversion:\n{df_clean.head()}")
+            
+            if not has_data:
+                raise ValueError("No valid numeric data for hours analysis")
+            
+            # Validate hours are non-negative (only check non-NaN values)
+            for col in hour_cols:
+                non_null_values = df_clean[col].dropna()
+                if len(non_null_values) > 0 and (non_null_values < 0).any():
+                    raise ValueError(f"{col} must be non-negative")
+                    
+        elif table_type == 'timeline':
+            df_clean['duration_weeks'] = pd.to_numeric(df_clean['duration_weeks'], errors='coerce')
+            df_clean = df_clean.dropna(subset=['duration_weeks'])
+            
+            if df_clean.empty:
+                raise ValueError("No valid numeric data for timeline")
+            
+            df_clean['duration_weeks'] = df_clean['duration_weeks'].astype(int)
+            
+            if (df_clean['duration_weeks'] <= 0).any():
+                invalid_rows = df_clean[df_clean['duration_weeks'] <= 0]
+                raise ValueError(f"Duration weeks must be greater than 0. Invalid values: {invalid_rows['duration_weeks'].tolist()}")
+            
+            if 'phase_name' in df_clean.columns:
+                df_clean['phase_name'] = df_clean['phase_name'].astype(str)
+                
+        elif table_type == 'rate':
+            # Map hours to budgeted_hours
+            if 'hours' in df_clean.columns and 'budgeted_hours' not in df_clean.columns:
+                df_clean['budgeted_hours'] = df_clean['hours']
+            
+            df_clean['budgeted_hours'] = pd.to_numeric(df_clean['budgeted_hours'], errors='coerce')
+            df_clean['hourly_rate'] = pd.to_numeric(df_clean['hourly_rate'], errors='coerce')
+            
+            df_clean = df_clean.dropna(subset=['budgeted_hours', 'hourly_rate'])
+            
+            if df_clean.empty:
+                raise ValueError("No valid numeric data for rate calculation")
+            
+            # Validate > 0
+            if (df_clean['budgeted_hours'] <= 0).any():
+                invalid_rows = df_clean[df_clean['budgeted_hours'] <= 0]
+                raise ValueError(f"Budgeted hours must be greater than 0. Invalid values: {invalid_rows['budgeted_hours'].tolist()}")
+            
+            if (df_clean['hourly_rate'] <= 0).any():
+                invalid_rows = df_clean[df_clean['hourly_rate'] <= 0]
+                raise ValueError(f"Hourly rate must be greater than 0. Invalid values: {invalid_rows['hourly_rate'].tolist()}")
+            
+            df_clean['total_cost'] = df_clean['budgeted_hours'] * df_clean['hourly_rate']
+            
+            if 'module_name' in df_clean.columns:
+                df_clean['module_name'] = df_clean['module_name'].astype(str)
+        
+        else:
+            raise ValueError(f"Unknown table type: {table_type}")
+        
+        return df_clean
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Data validation failed for {table_type}: {str(e)}")
 
 def calculate_week_number(date):
     """
@@ -559,22 +681,94 @@ def add_project():
     
     return jsonify({'success': True})
 
-@app.route('/api/projects/<int:project_id>', methods=['PUT'])
+@app.route('/api/update-project/<int:project_id>', methods=['POST'])
 def update_project(project_id):
-    """Update project name/status"""
-    d = request.json
-    
-    # Validate unique name (excluding self)
-    if db_manager.execute_custom_query(
-        f"SELECT 1 FROM dim_project WHERE project_name='{d['projectName']}' AND project_id!={project_id}"
-    ).shape[0] > 0:
-        return jsonify({'success': False, 'error': 'Project name exists'}), 400
-    
-    db_manager.execute_custom_command(
-        f"UPDATE dim_project SET project_name='{d['projectName']}', project_status='{d['status']}', "
-        f"modified_date=GETDATE() WHERE project_id={project_id}"
-    )
-    return jsonify({'success': True})
+    """Update project data"""
+    try:
+        data = request.json
+        
+        # Log incoming data
+        app.logger.info(f"Received update request for project {project_id}")
+        app.logger.info(f"Data keys: {data.keys() if data else 'None'}")
+        
+        # Extract table data
+        cost_data = data.get('costAnalysis', [])
+        hours_data = data.get('hoursAnalysis', [])
+        timeline_data = data.get('timeline', [])
+        rate_data = data.get('rateCalculation', [])
+        
+        app.logger.info(f"Cost rows: {len(cost_data)}, Hours rows: {len(hours_data)}, Timeline rows: {len(timeline_data)}, Rate rows: {len(rate_data)}")
+        
+        # Convert to DataFrames
+        df_cost = pd.DataFrame(cost_data)
+        df_hours = pd.DataFrame(hours_data)
+        df_timeline = pd.DataFrame(timeline_data)
+        df_rate = pd.DataFrame(rate_data)
+        
+        # Log DataFrame info
+        app.logger.info(f"Cost DataFrame columns: {df_cost.columns.tolist()}")
+        app.logger.info(f"Cost DataFrame sample: {df_cost.head(1).to_dict('records')}")
+        app.logger.info(f"Hours DataFrame columns: {df_hours.columns.tolist()}")
+        app.logger.info(f"Timeline DataFrame columns: {df_timeline.columns.tolist()}")
+        app.logger.info(f"Rate DataFrame columns: {df_rate.columns.tolist()}")
+        
+        # Validate and convert data
+        try:
+            app.logger.info("Starting validation for cost data...")
+            df_cost = validate_and_convert_data(df_cost, 'cost')
+            app.logger.info(f"Cost validation passed, {len(df_cost)} rows")
+            
+            app.logger.info("Starting validation for hours data...")
+            df_hours = validate_and_convert_data(df_hours, 'hours')
+            app.logger.info(f"Hours validation passed, {len(df_hours)} rows")
+            
+            app.logger.info("Starting validation for timeline data...")
+            df_timeline = validate_and_convert_data(df_timeline, 'timeline')
+            app.logger.info(f"Timeline validation passed, {len(df_timeline)} rows")
+            
+            app.logger.info("Starting validation for rate data...")
+            df_rate = validate_and_convert_data(df_rate, 'rate')
+            app.logger.info(f"Rate validation passed, {len(df_rate)} rows")
+            
+        except ValueError as ve:
+            app.logger.error(f"Validation error: {str(ve)}")
+            return jsonify({
+                'success': False,
+                'error': f'Data validation failed: {str(ve)}'
+            }), 400
+        
+        # Delete existing data
+        app.logger.info(f"Deleting existing data for project {project_id}")
+        db_manager.delete_cost_analysis(project_id)
+        db_manager.delete_hours_analysis(project_id)
+        db_manager.delete_timeline(project_id)
+        db_manager.delete_rate_calculation(project_id)
+        
+        # Insert new data
+        app.logger.info(f"Inserting new data for project {project_id}")
+        cost_count = db_manager.bulk_insert_cost_analysis(project_id, df_cost)
+        hours_count = db_manager.bulk_insert_hours_analysis(project_id, df_hours)
+        timeline_count = db_manager.bulk_insert_timeline(project_id, df_timeline)
+        rate_count = db_manager.bulk_insert_rate_calculation(project_id, df_rate)
+        
+        app.logger.info(f"Successfully updated project {project_id}: cost={cost_count}, hours={hours_count}, timeline={timeline_count}, rate={rate_count}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Project updated successfully',
+            'recordsUpdated': {
+                'costAnalysis': cost_count,
+                'hoursAnalysis': hours_count,
+                'timeline': timeline_count,
+                'rateCalculation': rate_count
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error updating project {project_id}: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/projects/<int:project_id>', methods=['DELETE'])
 def delete_project(project_id):
@@ -988,9 +1182,9 @@ def update_project_metadata(project_id):
         
         # Update project details
         db_manager.execute_custom_command(
-            "UPDATE dimproject SET customer_name=?, project_name=?, project_start_date=? WHERE project_id=?",
+            "UPDATE dim_project SET customer_id=?, project_name=?, project_start_date=? WHERE project_id=?",
             params=(
-                changes['projectDetails']['customername'],
+                changes['projectDetails']['customerid'],
                 changes['projectDetails']['projectname'],
                 changes['projectDetails']['projectstartdate'],
                 project_id
@@ -1178,36 +1372,43 @@ def parse_file():
 @app.route('/api/submit-project', methods=['POST'])
 def submit_project():
     """
-    Step 2: Submit reviewed/edited project data to database
-    This route accepts the edited data and project info, then inserts into DB
+    Submit reviewed/edited project data to database.
+    Uses existing project and inserts fact table data.
     """
     try:
-        # Get JSON data from request
         data = request.json
-        
         if not data:
             return jsonify({'success': False, 'error': 'No data provided'}), 400
         
         # Extract project information
         project_info = data.get('projectInfo', {})
-        customer_name = project_info.get('customerName')
-        project_name = project_info.get('projectName')
+        customer_id = project_info.get('customerId')
+        project_id = project_info.get('projectId')
         project_start_date = project_info.get('projectStartDate')
         
         # Validate required fields
-        if not all([customer_name, project_name, project_start_date]):
+        if not all([customer_id, project_id, project_start_date]):
             return jsonify({
                 'success': False,
-                'error': 'Missing required project information'
+                'error': 'Missing required project information (customer ID, project ID, or start date)'
             }), 400
         
-        # Extract table data
+        # Validate IDs are integers
+        try:
+            customer_id = int(customer_id)
+            project_id = int(project_id)
+        except (ValueError, TypeError):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid customer ID or project ID'
+            }), 400
+        
+        # Extract table data and convert to DataFrames
         cost_analysis_data = data.get('costAnalysis', [])
         hours_analysis_data = data.get('hoursAnalysis', [])
         timeline_data = data.get('timeline', [])
         rate_calculation_data = data.get('rateCalculation', [])
         
-        # Convert JSON arrays back to pandas DataFrames
         df_cost = pd.DataFrame(cost_analysis_data)
         df_hours = pd.DataFrame(hours_analysis_data)
         df_timeline = pd.DataFrame(timeline_data)
@@ -1220,42 +1421,61 @@ def submit_project():
                 'error': 'One or more required tables are empty'
             }), 400
         
-        # Prepare project info dictionary
-        project_dict = {
-            'customer_name': customer_name,
-            'project_name': project_name,
-            'project_start_date': project_start_date
-        }
+        # Delete existing fact table data for this project before inserting new data
+        app.logger.info(f"Clearing existing data for project {project_id}")
+        try:
+            db_manager.delete_cost_analysis(project_id)
+        except:
+            app.logger.info("No cost analysis data to remove")
+
+        try:
+            db_manager.delete_hours_analysis(project_id)
+        except:
+            app.logger.info("No hours analysis data to remove")
+
+        try:
+            db_manager.delete_timeline(project_id)
+        except:
+            app.logger.info("No timeline data to remove")
         
-        # Insert project data into database
-        project_id = db_manager.insert_project_from_dataframes(
-            project_dict,
-            df_cost,
-            df_hours,
-            df_timeline,
-            df_rate
+        try:
+            db_manager.delete_rate_calculation(project_id)
+        except:
+            app.logger.info("No rate calculation data to remove")
+        
+        # Insert new data using existing methods
+        app.logger.info(f"Inserting new data for project {project_id}")
+        cost_count = db_manager.bulk_insert_cost_analysis(project_id, df_cost)
+        hours_count = db_manager.bulk_insert_hours_analysis(project_id, df_hours)
+        timeline_count = db_manager.bulk_insert_timeline(project_id, df_timeline)
+        rate_count = db_manager.bulk_insert_rate_calculation(project_id, df_rate)
+        
+        app.logger.info(
+            f"Successfully uploaded project {project_id}: "
+            f"{cost_count} cost, {hours_count} hours, "
+            f"{timeline_count} timeline, {rate_count} rate records"
         )
-        
-        # Clean up uploaded file from session
-        if 'uploaded_file_path' in session:
-            file_path = session['uploaded_file_path']
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            session.pop('uploaded_file_path', None)
-            session.pop('parsed_columns', None)
         
         return jsonify({
             'success': True,
             'projectId': project_id,
-            'message': f'Project "{project_name}" uploaded successfully'
+            'message': 'Project data uploaded successfully',
+            'recordsInserted': {
+                'costAnalysis': cost_count,
+                'hoursAnalysis': hours_count,
+                'timeline': timeline_count,
+                'rateCalculation': rate_count
+            }
         })
         
     except Exception as e:
+        app.logger.error(f"Error in submit_project: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'error': f'Error submitting project: {str(e)}'
         }), 500
-
 
 @app.route('/api/validate-data', methods=['POST'])
 def validate_data():

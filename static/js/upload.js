@@ -49,8 +49,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const customerSelect = document.getElementById('customerName');
         customers.forEach(customer => {
             const option = document.createElement('option');
-            option.value = customer;
-            option.textContent = customer;
+            option.value = customer.customerId;  // ← Use customerId
+            option.textContent = customer.customerName;  // ← Display customerName
             customerSelect.appendChild(option);
         });
     } catch (error) {
@@ -62,29 +62,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ==================== CUSTOMER/PROJECT HANDLERS ====================
 
 async function loadCustomerProjects() {
-    const customer = document.getElementById('customerName').value;
+    const customerId = document.getElementById('customerName').value;
     const projectSelect = document.getElementById('projectName');
     
-    // Reset project dropdown
+    // Reset project dropdown with proper option element
     projectSelect.innerHTML = '<option value="">-- Select Project --</option>';
     projectSelect.disabled = true;
     
-    if (!customer) return;
+    if (!customerId) return;
     
     try {
-        const response = await fetch(`/api/customers/${encodeURIComponent(customer)}/projects`);
+        const response = await fetch(`/api/customers/${customerId}/projects`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
         const projects = await response.json();
+        
+        console.log(`Loaded ${projects.length} projects for customer ${customerId}`);
         
         projects.forEach(proj => {
             const option = document.createElement('option');
-            option.value = proj.projectName;
+            option.value = proj.projectId;
             option.textContent = proj.projectName;
             option.dataset.projectId = proj.projectId;
-            option.dataset.startDate = proj.projectStartDate;
+            option.dataset.startDate = proj.projectStartDate || proj.project_start_date || '';
             projectSelect.appendChild(option);
         });
         
         projectSelect.disabled = false;
+        
     } catch (error) {
         console.error('Error loading projects:', error);
         showAlert('Error loading projects: ' + error.message, 'danger');
@@ -394,11 +402,11 @@ function formatDateForInput(value) {
 async function submitToDatabase() {
     try {
         // Validate project info
-        const customerName = document.getElementById('customerName').value;
-        const projectName = document.getElementById('projectName').value;
+        const customerId = parseInt(document.getElementById('customerName').value);  // ← Get customerId
+        const projectId = parseInt(document.getElementById('projectName').value);  // ← Get projectId
         const projectStartDate = document.getElementById('projectStartDate').value;
         
-        if (!customerName || !projectName || !projectStartDate) {
+        if (!customerId || !projectId || !projectStartDate) {
             showAlert('Please fill in all project information fields', 'warning');
             return;
         }
@@ -406,9 +414,9 @@ async function submitToDatabase() {
         // Collect edited data from tables
         const projectData = {
             projectInfo: {
-                customerName,
-                projectName,
-                projectStartDate
+                customerId: customerId,
+                projectId: projectId,
+                projectStartDate: projectStartDate
             },
             costAnalysis: getTableData('cost'),
             hoursAnalysis: getTableData('hours'),

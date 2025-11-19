@@ -10,8 +10,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         customers.forEach(customer => {
             const option = document.createElement('option');
-            option.value = customer.customerId;  // ✓ Already correct
-            option.textContent = customer.customerName;  // ✓ Already correct
+            option.value = customer.customerId;
+            option.textContent = customer.customerName;
             selector.appendChild(option);
         });
     } catch (error) {
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function loadCustomerProjects() {
-    const customerId = document.getElementById('customerSelector').value;  // ← Changed variable name for clarity
+    const customerId = document.getElementById('customerSelector').value;
     const projectSelector = document.getElementById('projectSelector');
     const loadBtn = document.getElementById('loadBtn');
     
@@ -32,7 +32,6 @@ async function loadCustomerProjects() {
     if (!customerId) return;
     
     try {
-        // ✓ FIX: Don't use encodeURIComponent for integer IDs
         const response = await fetch(`/api/customers/${customerId}/projects`);
         const projects = await response.json();
         
@@ -70,6 +69,10 @@ async function loadProjectData() {
         // Store original data
         originalData = JSON.parse(JSON.stringify(data));
         
+        console.log("--- DATA ---");
+        console.log(originalData);
+        console.log("--- END DATA ---");
+
         // Populate forms
         populateProjectDetails(data.project);
         populateCostTable(data.costanalysis);
@@ -89,7 +92,13 @@ function populateProjectDetails(project) {
     // Handle both camelCase and snake_case field names
     document.getElementById('edit-customerName').value = project.customer_name || project.customerName || '';
     document.getElementById('edit-projectName').value = project.project_name || project.projectName || '';
-    document.getElementById('edit-startDate').value = (project.project_start_date || project.projectStartDate || '').split('T')[0];
+    
+    // Parse and format date for date input (YYYY-MM-DD)
+    const dateStr = project.project_start_date || project.projectStartDate || '';
+    const date = dateStr ? new Date(dateStr) : null;
+    document.getElementById('edit-startDate').value = date && !isNaN(date.getTime()) 
+        ? date.toISOString().split('T')[0] 
+        : '';
 }
 
 function populateCostTable(costData) {
@@ -236,7 +245,7 @@ async function saveAllChanges() {
   const changes = {
     projectId: currentProjectId,
     projectDetails: {
-      customername: document.getElementById('edit-customerName').value,
+      customerid: document.getElementById('customerSelector').value,
       projectname: document.getElementById('edit-projectName').value,
       projectstartdate: document.getElementById('edit-startDate').value
     },
@@ -266,19 +275,56 @@ async function saveAllChanges() {
 }
 
 function collectTableData(tableId) {
-  const rows = document.querySelectorAll(`#${tableId} tbody tr`);
-  const data = [];
-  
-  rows.forEach(row => {
-    const rowData = { id: row.dataset.id };
-    row.querySelectorAll('td[contenteditable]').forEach(cell => {
-      const field = cell.dataset.field;
-      rowData[field] = cell.textContent.trim();
+    const rows = document.querySelectorAll(`#${tableId} tbody tr`);
+    const data = [];
+    
+    // Table-specific column mappings
+    const columnMaps = {
+        costTable: ['payment_milestone', 'weight', 'cost'],
+        hoursTable: ['module_name', 'weight', 'p_plus_m', 'plan', 'a_plus_c', 'testing', 'deploy', 'post_go_live', 'total_hours'],
+        timelineTable: ['phase_name', 'duration_weeks'],
+        rateTable: ['module_name', 'hours', 'hourly_rate', 'total_cost']
+    };
+    
+    const columns = columnMaps[tableId] || [];
+    
+    rows.forEach(row => {
+        const rowData = {};
+        
+        // Try to get data from inputs first (for editable tables like costTable)
+        const inputs = row.querySelectorAll('input[data-field]');
+        inputs.forEach(input => {
+            const field = input.dataset.field;
+            const id = input.dataset.id;
+            if (field) rowData[field] = input.value;
+            if (id && !rowData.id) rowData.id = id;
+        });
+        
+        // If no inputs found, read from td cells (for read-only tables)
+        if (inputs.length === 0) {
+            const cells = row.querySelectorAll('td');
+            cells.forEach((cell, index) => {
+                if (columns[index]) {
+                    rowData[columns[index]] = cell.textContent.trim();
+                }
+            });
+        } else {
+            // For mixed tables, get non-input cells (like payment_milestone in costTable)
+            const cells = row.querySelectorAll('td');
+            cells.forEach((cell, index) => {
+                if (!cell.querySelector('input') && columns[index]) {
+                    rowData[columns[index]] = cell.textContent.trim();
+                }
+            });
+        }
+        
+        // Only add rows with actual data
+        if (Object.keys(rowData).length > 0) {
+            data.push(rowData);
+        }
     });
-    data.push(rowData);
-  });
-  
-  return data;
+    
+    return data;
 }
 
 function cancelEdit() {
