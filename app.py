@@ -253,62 +253,73 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
     try:
         from datetime import datetime, timedelta
         
-        # Use provided dates or default
         if not start_date:
             start_date = datetime.now().date()
         if not end_date:
             end_date = (datetime.now() + timedelta(days=365)).date()
         
-        # Convert to datetime objects if they're strings
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
         
-        app.logger.info(f"Aggregating by module: {granularity}, {start_date} to {end_date}")
+        app.logger.info(f"Aggregating by module {granularity}, {start_date} to {end_date}")
         
-        # Query data within date range
         if granularity == 'weekly':
             query = f"""
-            SELECT
-                module_name,
-                week_start_date,
-                week_end_date,
-                SUM(planned_hours) AS total_hours
-            FROM vw_module_phase_hours_calendar
-            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-            AND planned_hours IS NOT NULL
-            AND project_status = 'Active'
-            GROUP BY module_name, week_start_date, week_end_date
-            ORDER BY week_start_date, module_name
+                SELECT 
+                    module_name,
+                    week_start_date,
+                    week_end_date,
+                    SUM(planned_hours) AS total_hours
+                FROM vw_module_phase_hours_calendar
+                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                    AND planned_hours IS NOT NULL
+                    AND project_status = 'Active'
+                    AND module_name NOT IN ('SUMS', 'Sums', 'sums', 
+                                            'TOTAL', 'Total', 'total',
+                                            'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
+                                            'WEEK EFFORT', 'Week Effort', 'week effort',
+                                            'SUBTOTAL', 'Subtotal', 'subtotal')
+                    AND UPPER(module_name) NOT LIKE '%SUM%'
+                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
+                GROUP BY module_name, week_start_date, week_end_date
+                ORDER BY week_start_date, module_name
             """
-        
         elif granularity == 'monthly':
             query = f"""
-            SELECT
-                module_name,
-                FORMAT(week_start_date, 'yyyy-MM') AS period,
-                SUM(planned_hours) AS total_hours
-            FROM vw_module_phase_hours_calendar
-            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-            AND planned_hours IS NOT NULL
-            AND project_status = 'Active'
-            GROUP BY module_name, FORMAT(week_start_date, 'yyyy-MM')
-            ORDER BY FORMAT(week_start_date, 'yyyy-MM'), module_name
+                SELECT 
+                    module_name,
+                    FORMAT(week_start_date, 'yyyy-MM') AS period,
+                    SUM(planned_hours) AS total_hours
+                FROM vw_module_phase_hours_calendar
+                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                    AND planned_hours IS NOT NULL
+                    AND project_status = 'Active'
+                    AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
+                    AND UPPER(module_name) NOT LIKE '%SUM%'
+                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
+                GROUP BY module_name, FORMAT(week_start_date, 'yyyy-MM')
+                ORDER BY FORMAT(week_start_date, 'yyyy-MM'), module_name
             """
-        
         else:  # quarterly
             query = f"""
-            SELECT
-                module_name,
-                CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
-                SUM(planned_hours) AS total_hours
-            FROM vw_module_phase_hours_calendar
-            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-            AND planned_hours IS NOT NULL
-            AND project_status = 'Active'
-            GROUP BY module_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
-            ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), module_name
+                SELECT 
+                    module_name,
+                    CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
+                    SUM(planned_hours) AS total_hours
+                FROM vw_module_phase_hours_calendar
+                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                    AND planned_hours IS NOT NULL
+                    AND project_status = 'Active'
+                    AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
+                    AND UPPER(module_name) NOT LIKE '%SUM%'
+                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
+                GROUP BY module_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
+                ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), module_name
             """
         
         df = db_manager.execute_custom_query(query)
@@ -818,17 +829,25 @@ def get_weekly_module_hours():
         start_date, end_date = get_date_range_from_request()
 
         query = f"""
-        SELECT
-        week_start_date,
-        week_end_date,
-        module_name,
-        SUM(planned_hours) AS total_hours
-        FROM vw_module_phase_hours_calendar
-        WHERE project_status = 'Active'
-        AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
-        AND week_start_date IS NOT NULL
-        GROUP BY week_start_date, week_end_date, module_name
-        ORDER BY week_start_date, module_name
+            SELECT 
+                week_start_date,
+                week_end_date,
+                module_name,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE project_status = 'Active'
+                AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                AND week_start_date IS NOT NULL
+                AND module_name NOT IN ('SUMS', 'Sums', 'sums',
+                                        'TOTAL', 'Total', 'total',
+                                        'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
+                                        'WEEK EFFORT', 'Week Effort', 'week effort',
+                                        'SUBTOTAL', 'Subtotal', 'subtotal')
+                AND UPPER(module_name) NOT LIKE '%SUM%'
+                AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                AND UPPER(module_name) NOT LIKE '%EFFORT%'
+            GROUP BY week_start_date, week_end_date, module_name
+            ORDER BY week_start_date, module_name
         """
         
         df = db_manager.execute_custom_query(query)
