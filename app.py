@@ -253,77 +253,80 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
     try:
         from datetime import datetime, timedelta
         
+        # Handle default dates
         if not start_date:
             start_date = datetime.now().date()
         if not end_date:
             end_date = (datetime.now() + timedelta(days=365)).date()
         
+        # Convert string dates to date objects
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
-        
+
         app.logger.info(f"Aggregating by module {granularity}, {start_date} to {end_date}")
-        
+
+        # Build query based on granularity
         if granularity == 'weekly':
             query = f"""
-                SELECT 
-                    module_name,
-                    week_start_date,
-                    week_end_date,
-                    SUM(planned_hours) AS total_hours
-                FROM vw_module_phase_hours_calendar
-                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-                    AND planned_hours IS NOT NULL
-                    AND project_status = 'Active'
-                    AND module_name NOT IN ('SUMS', 'Sums', 'sums', 
-                                            'TOTAL', 'Total', 'total',
-                                            'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
-                                            'WEEK EFFORT', 'Week Effort', 'week effort',
-                                            'SUBTOTAL', 'Subtotal', 'subtotal')
-                    AND UPPER(module_name) NOT LIKE '%SUM%'
-                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
-                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
-                GROUP BY module_name, week_start_date, week_end_date
-                ORDER BY week_start_date, module_name
+            SELECT
+                module_name,
+                week_start_date,
+                week_end_date,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                AND planned_hours IS NOT NULL
+                AND project_status = 'Active'
+                AND module_name NOT IN ('SUMS', 'Sums', 'sums',
+                    'TOTAL', 'Total', 'total',
+                    'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
+                    'WEEK EFFORT', 'Week Effort', 'week effort',
+                    'SUBTOTAL', 'Subtotal', 'subtotal')
+                AND UPPER(module_name) NOT LIKE '%SUM%'
+                AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                AND UPPER(module_name) NOT LIKE '%EFFORT%'
+            GROUP BY module_name, week_start_date, week_end_date
+            ORDER BY week_start_date, module_name
             """
         elif granularity == 'monthly':
             query = f"""
-                SELECT 
-                    module_name,
-                    FORMAT(week_start_date, 'yyyy-MM') AS period,
-                    SUM(planned_hours) AS total_hours
-                FROM vw_module_phase_hours_calendar
-                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-                    AND planned_hours IS NOT NULL
-                    AND project_status = 'Active'
-                    AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
-                    AND UPPER(module_name) NOT LIKE '%SUM%'
-                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
-                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
-                GROUP BY module_name, FORMAT(week_start_date, 'yyyy-MM')
-                ORDER BY FORMAT(week_start_date, 'yyyy-MM'), module_name
+            SELECT
+                module_name,
+                FORMAT(week_start_date, 'yyyy-MM') AS period,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                AND planned_hours IS NOT NULL
+                AND project_status = 'Active'
+                AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
+                AND UPPER(module_name) NOT LIKE '%SUM%'
+                AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                AND UPPER(module_name) NOT LIKE '%EFFORT%'
+            GROUP BY module_name, FORMAT(week_start_date, 'yyyy-MM')
+            ORDER BY FORMAT(week_start_date, 'yyyy-MM'), module_name
             """
         else:  # quarterly
             query = f"""
-                SELECT 
-                    module_name,
-                    CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
-                    SUM(planned_hours) AS total_hours
-                FROM vw_module_phase_hours_calendar
-                WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
-                    AND planned_hours IS NOT NULL
-                    AND project_status = 'Active'
-                    AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
-                    AND UPPER(module_name) NOT LIKE '%SUM%'
-                    AND UPPER(module_name) NOT LIKE '%TOTAL%'
-                    AND UPPER(module_name) NOT LIKE '%EFFORT%'
-                GROUP BY module_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
-                ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), module_name
+            SELECT
+                module_name,
+                CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)) AS period,
+                SUM(planned_hours) AS total_hours
+            FROM vw_module_phase_hours_calendar
+            WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
+                AND planned_hours IS NOT NULL
+                AND project_status = 'Active'
+                AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
+                AND UPPER(module_name) NOT LIKE '%SUM%'
+                AND UPPER(module_name) NOT LIKE '%TOTAL%'
+                AND UPPER(module_name) NOT LIKE '%EFFORT%'
+            GROUP BY module_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
+            ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), module_name
             """
-        
+
         df = db_manager.execute_custom_query(query)
-        
+
         if df.empty:
             app.logger.warning("No data returned from aggregate_hours_by_module query")
             return {
@@ -331,47 +334,57 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
                 'datasets': [],
                 'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
             }
-        
-        # *** KEY FIX: Use actual periods from database instead of generating them ***
+
+        # ✓ FIXED: Generate Monday-aligned weeks instead of using raw database dates
         if granularity == 'weekly':
-            # Get unique week_start_dates from the actual data
-            all_periods = sorted(df['week_start_date'].unique())
-            all_periods = [d.strftime('%Y-%m-%d') for d in all_periods]
+            all_periods = generate_week_labels(start_date, end_date)
         elif granularity == 'monthly':
-            all_periods = sorted(df['period'].unique())
+            all_periods = generate_month_labels(start_date, end_date)
         else:
-            all_periods = sorted(df['period'].unique())
-        
+            all_periods = generate_quarter_labels(start_date, end_date)
+
         # Get unique modules
         modules = sorted(df['module_name'].unique())
-        
         app.logger.info(f"Found {len(modules)} modules: {modules}")
-        app.logger.info(f"Found {len(all_periods)} actual data periods")
-        app.logger.info(f"Periods: {all_periods}")
-        
+        app.logger.info(f"Found {len(all_periods)} periods")
+
+        # ✓ HELPER FUNCTION: Normalize any date to its Monday
+        def normalize_to_monday(date_obj):
+            """Convert any date (Wed, Thu, etc.) to the Monday of that week"""
+            if isinstance(date_obj, str):
+                date_obj = datetime.strptime(date_obj, '%Y-%m-%d').date()
+            days_since_monday = date_obj.weekday()
+            monday = date_obj - timedelta(days=days_since_monday)
+            return monday.strftime('%Y-%m-%d')
+
         # Create dataset for each module
         datasets = []
         for module in modules:
             module_data = df[df['module_name'] == module]
             
-            # Map hours to periods
+            # ✓ FIXED: Normalize dates to Monday when creating the mapping
             hours_by_period = {}
             for _, row in module_data.iterrows():
                 if granularity == 'weekly':
-                    period_key = row['week_start_date'].strftime('%Y-%m-%d')
+                    # Normalize Wednesday (or any day) to Monday
+                    period_key = normalize_to_monday(row['week_start_date'])
                 else:
                     period_key = row['period']
-                hours_by_period[period_key] = float(row['total_hours'])
-            
-            # Fill in all periods - now these match actual data periods!
+                
+                # Accumulate hours if multiple rows map to same Monday
+                if period_key in hours_by_period:
+                    hours_by_period[period_key] += float(row['total_hours'])
+                else:
+                    hours_by_period[period_key] = float(row['total_hours'])
+
+            # Fill in all periods with zeros for missing data
             data_values = [hours_by_period.get(period, 0) for period in all_periods]
-            
-            # Log the actual data
+
+            # Log the actual data for debugging
             non_zero = sum(1 for v in data_values if v > 0)
             total = sum(data_values)
             app.logger.info(f"Module '{module}': {non_zero}/{len(data_values)} non-zero weeks, total {total:.1f} hours")
-            app.logger.info(f"  Data: {data_values}")
-            
+
             datasets.append({
                 'label': module,
                 'data': data_values,
@@ -380,17 +393,17 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
                 'fill': False,
                 'tension': 0.1
             })
-        
+
         app.logger.info(f"Generated {len(datasets)} datasets")
-        
+
         return {
             'labels': all_periods,
             'datasets': datasets,
             'dateRange': {'startDate': str(start_date), 'endDate': str(end_date)}
         }
-        
+
     except Exception as e:
-        app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}\")")
+        app.logger.error(f"Error in aggregate_hours_by_module: {str(e)}")
         import traceback
         traceback.print_exc()
         return {
@@ -823,31 +836,37 @@ def get_project(project_id):
 def get_weekly_module_hours():
     """
     Get aggregated weekly hours by module for all active projects.
-    Returns data structured for a scrollable weekly table.
+    Returns data structured for a scrollable weekly table with Monday-aligned weeks.
     """
     try:
         start_date, end_date = get_date_range_from_request()
-
+        
+        # Convert to date objects if strings
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
         query = f"""
-            SELECT 
-                week_start_date,
-                week_end_date,
-                module_name,
-                SUM(planned_hours) AS total_hours
-            FROM vw_module_phase_hours_calendar
-            WHERE project_status = 'Active'
-                AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
-                AND week_start_date IS NOT NULL
-                AND module_name NOT IN ('SUMS', 'Sums', 'sums',
-                                        'TOTAL', 'Total', 'total',
-                                        'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
-                                        'WEEK EFFORT', 'Week Effort', 'week effort',
-                                        'SUBTOTAL', 'Subtotal', 'subtotal')
-                AND UPPER(module_name) NOT LIKE '%SUM%'
-                AND UPPER(module_name) NOT LIKE '%TOTAL%'
-                AND UPPER(module_name) NOT LIKE '%EFFORT%'
-            GROUP BY week_start_date, week_end_date, module_name
-            ORDER BY week_start_date, module_name
+        SELECT
+            week_start_date,
+            week_end_date,
+            module_name,
+            SUM(planned_hours) AS total_hours
+        FROM vw_module_phase_hours_calendar
+        WHERE project_status = 'Active'
+            AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
+            AND week_start_date IS NOT NULL
+            AND module_name NOT IN ('SUMS', 'Sums', 'sums',
+                'TOTAL', 'Total', 'total',
+                'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
+                'WEEK EFFORT', 'Week Effort', 'week effort',
+                'SUBTOTAL', 'Subtotal', 'subtotal')
+            AND UPPER(module_name) NOT LIKE '%SUM%'
+            AND UPPER(module_name) NOT LIKE '%TOTAL%'
+            AND UPPER(module_name) NOT LIKE '%EFFORT%'
+        GROUP BY week_start_date, week_end_date, module_name
+        ORDER BY week_start_date, module_name
         """
         
         df = db_manager.execute_custom_query(query)
@@ -860,33 +879,50 @@ def get_weekly_module_hours():
                 'data': []
             })
         
-        # Get unique weeks and modules
-        weeks_df = df[['week_start_date', 'week_end_date']].drop_duplicates().sort_values('week_start_date')
+        # ✓ FIXED: Generate Monday-aligned weeks
+        week_labels = generate_week_labels(start_date, end_date)
+        
+        # ✓ HELPER: Normalize any date to its Monday
+        def normalize_to_monday(date_obj):
+            """Convert any date to the Monday of that week"""
+            if isinstance(date_obj, str):
+                date_obj = datetime.strptime(date_obj, '%Y-%m-%d').date()
+            days_since_monday = date_obj.weekday()
+            monday = date_obj - timedelta(days=days_since_monday)
+            return monday
+        
+        # Get unique modules
         modules = sorted(df['module_name'].unique().tolist())
         
-        # Build the data structure
+        # ✓ FIXED: Build weeks array with Monday alignment
         weeks = []
-        data = []
-        
-        for _, week_row in weeks_df.iterrows():
-            week_start = week_row['week_start_date']
-            week_end = week_row['week_end_date']
-            
-            # Format: "Nov 10 - Nov 16, 2025"
+        for week_start_str in week_labels:
+            week_start = datetime.strptime(week_start_str, '%Y-%m-%d').date()
+            week_end = week_start + timedelta(days=6)
             week_label = f"{week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}"
             weeks.append({
                 'label': week_label,
                 'start': week_start.isoformat(),
                 'end': week_end.isoformat()
             })
+        
+        # ✓ FIXED: Build data array with Monday normalization
+        data = []
+        for week_start_str in week_labels:
+            week_start = datetime.strptime(week_start_str, '%Y-%m-%d').date()
             
-            # Get hours for each module in this week
-            week_data = df[df['week_start_date'] == week_start]
-            module_hours = {}
-            for module in modules:
-                module_row = week_data[week_data['module_name'] == module]
-                hours = float(module_row['total_hours'].iloc[0]) if not module_row.empty else 0
-                module_hours[module] = hours
+            # Accumulate hours for all database rows that belong to this Monday
+            module_hours = {module: 0 for module in modules}  # Initialize with zeros
+            
+            for _, row in df.iterrows():
+                # Normalize database date to Monday
+                row_monday = normalize_to_monday(row['week_start_date'])
+                
+                # If this database row belongs to current Monday week
+                if row_monday == week_start:
+                    module_name = row['module_name']
+                    hours = float(row['total_hours']) if pd.notna(row['total_hours']) else 0
+                    module_hours[module_name] += hours  # Accumulate
             
             data.append(module_hours)
         
@@ -898,6 +934,8 @@ def get_weekly_module_hours():
         
     except Exception as e:
         app.logger.error(f"Error in get_weekly_module_hours: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({
             'weeks': [],
             'modules': [],
@@ -908,29 +946,37 @@ def get_weekly_module_hours():
 def get_timeline_data():
     """
     Provides consolidated data for timeline and workload charts.
+    NOW GROUPED BY MODULE instead of phase.
     """
     try:
         # Get date range from request parameters
         start_date, end_date = get_date_range_from_request()
 
-        # 1. Fetch data from vw_module_phase_hours_calendar (NOT fact_project_timeline)
+        # 1. Fetch data from vw_module_phase_hours_calendar - GROUP BY MODULE
         project_timeline_query = f"""
         SELECT
-        project_id,
-        customer_name,
-        project_name,
-        project_status,
-        phase_id,
-        phase_code,
-        phase_name,
-        week_start_date,
-        week_end_date,
-        module_name,
-        planned_hours
+            project_id,
+            customer_name,
+            project_name,
+            project_status,
+            module_id,              -- CHANGED: from phase_id
+            module_code,            -- CHANGED: from phase_code (add this column)
+            module_name,            -- CHANGED: from phase_name
+            MIN(week_start_date) AS week_start_date,   -- CHANGED: aggregate
+            MAX(week_end_date) AS week_end_date,       -- CHANGED: aggregate
+            SUM(planned_hours) AS planned_hours        -- CHANGED: aggregate
         FROM vw_module_phase_hours_calendar
         WHERE project_status = 'Active'
-        AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
-        ORDER BY project_id, phase_id, week_start_date
+            AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
+        GROUP BY 
+            project_id,
+            customer_name,
+            project_name,
+            project_status,
+            module_id,              -- CHANGED: group by module instead of phase
+            module_code,            -- CHANGED: add to GROUP BY
+            module_name             -- CHANGED: already here, keep it
+        ORDER BY project_id, module_code, week_start_date
         """
         
         app.logger.info("Executing timeline query...")
@@ -946,15 +992,15 @@ def get_timeline_data():
         timeline_df = timeline_df.replace({np.nan: None})
         projects = timeline_df.to_dict('records')
 
-        # 2. Fetch workload data
+        # 2. Fetch workload data (UNCHANGED)
         workload_query = f"""
         SELECT
-        calendar_week_start AS "weekStart",
-        active_projects AS "activeProjects",
-        active_modules AS "activeModules"
+            calendar_week_start AS "weekStart",
+            active_projects AS "activeProjects",
+            active_modules AS "activeModules"
         FROM vw_concurrent_project_workload
         WHERE calendar_week_start BETWEEN '{start_date}' AND '{end_date}'
-        AND calendar_week_start IS NOT NULL
+            AND calendar_week_start IS NOT NULL
         ORDER BY calendar_week_start;
         """
         workload_df = db_manager.execute_custom_query(workload_query)
@@ -971,7 +1017,7 @@ def get_timeline_data():
                 }
             }
 
-        # 3. Calculate dateRange from timeline data (use week_start_date and week_end_date)
+        # 3. Calculate dateRange from timeline data (UNCHANGED)
         date_range = {}
         if not timeline_df.empty and 'week_start_date' in timeline_df.columns:
             min_date = timeline_df['week_start_date'].min()
@@ -1009,7 +1055,7 @@ def get_timeline_data():
             "workload": {"periods": [], "datasets": {"activeProjects": [], "activeModules": []}},
             "dateRange": {"minDate": today.isoformat(), "maxDate": today.isoformat()}
         }), 500
-
+    
 @app.route('/api/customers')
 def get_customers():
     query = """

@@ -93,13 +93,56 @@ class ProjectTimeline {
     
     getDefaultColors() {
         return {
-            'P+M': '#FF6B6B',
-            'Plan': '#4ECDC4',
-            'A+C': '#45B7D1',
-            'Testing': '#FFA07A',
-            'Deploy': '#98D8C8',
-            'Post Go Live': '#A8E6CF',
-            'default': '#CCCCCC'
+            // Project Management (Purple #7C3AED)
+            'Engagement Manager': '#7C3AED',
+            'Big Engagement Manager': '#7C3AED',
+            'Functional Lead': '#7C3AED',
+            
+            // Core HCM (Blue #2563EB)
+            'Core HCM': '#2563EB',
+            'Talent': '#2563EB',
+            'Peakon': '#2563EB',
+            
+            // Compensation & Benefits (Red #DC2626)
+            'Compensation': '#DC2626',
+            'Advanced Compensation': '#DC2626',
+            
+            // Talent Management (Orange #EA580C)
+            'Recruiting': '#EA580C',
+            'Learning': '#EA580C',
+            
+            // Time & Absence (Green #16A34A)
+            'Time': '#16A34A',
+            'Absence': '#16A34A',
+            'Scheduling': '#16A34A',
+            
+            // Payroll (Cyan #0891B2)
+            'Payroll': '#0891B2',
+            'Global Payroll Cloud': '#0891B2',
+            
+            // Financials (Gold #CA8A04)
+            'Core Financials': '#CA8A04',
+            'Expenses': '#CA8A04',
+            
+            // Journey & Experience (Pink #DB2777)
+            'Journeys': '#DB2777',
+            
+            // Integrations (Slate Gray #64748B)
+            'Integration 1x': '#64748B',
+            'Integration 2x': '#64748B',
+            'Integration 3x': '#64748B',
+            'Integration 4x': '#64748B',
+            'Integration 5x': '#64748B',
+            'Integration 6x': '#64748B',
+            'Integration 7x': '#64748B',
+            
+            // Data & Analytics (Indigo #4338CA)
+            'Data Simple': '#4338CA',
+            'Data Medium': '#4338CA',
+            'Data Complex': '#4338CA',
+            
+            // Fallback
+            'default': '#94A3B8'
         };
     }
     
