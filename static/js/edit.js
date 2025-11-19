@@ -6,12 +6,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         const response = await fetch('/api/customers');
         const customers = await response.json();
-        
         const selector = document.getElementById('customerSelector');
+        
         customers.forEach(customer => {
             const option = document.createElement('option');
-            option.value = customer;
-            option.textContent = customer;
+            option.value = customer.customerId;  // ✓ Already correct
+            option.textContent = customer.customerName;  // ✓ Already correct
             selector.appendChild(option);
         });
     } catch (error) {
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function loadCustomerProjects() {
-    const customer = document.getElementById('customerSelector').value;
+    const customerId = document.getElementById('customerSelector').value;  // ← Changed variable name for clarity
     const projectSelector = document.getElementById('projectSelector');
     const loadBtn = document.getElementById('loadBtn');
     
@@ -29,10 +29,11 @@ async function loadCustomerProjects() {
     projectSelector.disabled = true;
     loadBtn.disabled = true;
     
-    if (!customer) return;
+    if (!customerId) return;
     
     try {
-        const response = await fetch(`/api/customers/${encodeURIComponent(customer)}/projects`);
+        // ✓ FIX: Don't use encodeURIComponent for integer IDs
+        const response = await fetch(`/api/customers/${customerId}/projects`);
         const projects = await response.json();
         
         projects.forEach(proj => {
@@ -46,42 +47,49 @@ async function loadCustomerProjects() {
         loadBtn.disabled = false;
     } catch (error) {
         console.error('Error loading projects:', error);
+        alert('Failed to load projects for this customer');
     }
 }
 
-
 async function loadProjectData() {
-  const projectId = document.getElementById('projectSelector').value;
-  console.log('Selected project ID:', projectId);
-  if (!projectId) {
-    alert('Please select a project');
-    return;
-  }
-  
-  currentProjectId = projectId;
-  
-  // Fetch complete project data
-  const response = await fetch(`/api/project/${projectId}`);
-  const data = await response.json();
-  
-  // Store original data
-  originalData = JSON.parse(JSON.stringify(data));
-  
-  // Populate forms
-  populateProjectDetails(data.project);
-  populateCostTable(data.costanalysis);
-  populateHoursTable(data.hoursanalysis);
-  populateTimelineTable(data.timeline);
-  populateRateTable(data.ratecalculation);
-  
-  // Show edit form
-  document.getElementById('editForm').classList.remove('d-none');
+    const projectId = document.getElementById('projectSelector').value;
+    console.log('Selected project ID:', projectId);
+    
+    if (!projectId) {
+        alert('Please select a project');
+        return;
+    }
+    
+    currentProjectId = projectId;
+    
+    try {
+        // Fetch complete project data
+        const response = await fetch(`/api/project/${projectId}`);
+        const data = await response.json();
+        
+        // Store original data
+        originalData = JSON.parse(JSON.stringify(data));
+        
+        // Populate forms
+        populateProjectDetails(data.project);
+        populateCostTable(data.costanalysis);
+        populateHoursTable(data.hoursanalysis);
+        populateTimelineTable(data.timeline);
+        populateRateTable(data.ratecalculation);
+        
+        // Show edit form
+        document.getElementById('editForm').classList.remove('d-none');
+    } catch (error) {
+        console.error('Error loading project data:', error);
+        alert('Failed to load project data');
+    }
 }
 
 function populateProjectDetails(project) {
-    document.getElementById('edit-customerName').value = project.customer_name;
-    document.getElementById('edit-projectName').value = project.project_name;
-    document.getElementById('edit-startDate').value = project.project_start_date;
+    // Handle both camelCase and snake_case field names
+    document.getElementById('edit-customerName').value = project.customer_name || project.customerName || '';
+    document.getElementById('edit-projectName').value = project.project_name || project.projectName || '';
+    document.getElementById('edit-startDate').value = (project.project_start_date || project.projectStartDate || '').split('T')[0];
 }
 
 function populateCostTable(costData) {
@@ -93,10 +101,9 @@ function populateCostTable(costData) {
         console.log('Cost row:', row);
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td><input type="text" class="form-control" value="${row.payment_milestone || ''}"></td>
-            <td><input type="number" class="form-control" value="${row.weight || ''}"></td>
-            <td><input type="number" class="form-control" value="${row.cost || ''}"></td>
-            <td><button class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">Delete</button></td>
+            <td>${row.payment_milestone}</td>
+            <td><input type="number" step="0.01" value="${row.weight}" data-field="weight" data-id="${row.cost_analysis_id}"></td>
+            <td><input type="number" step="0.01" value="${row.cost}" data-field="cost" data-id="${row.cost_analysis_id}"></td>
         `;
         tbody.appendChild(tr);
     });

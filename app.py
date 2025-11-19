@@ -417,39 +417,47 @@ def get_project_color(project_name):
     hash_val = sum(ord(c) for c in project_name)
     return colors[hash_val % len(colors)]
     
-def get_enriched_projects():
+def get_enriched_projects(filter=True):
     """
-    Get all active projects with aggregated module counts and total hours.
-    This version starts from dim_project to ensure all active projects are included.
-    Returns DataFrame with enriched project data for the dashboard.
+    Get projects with aggregated module counts and total hours.
+    Joins dim_customer to get customer_name since dim_project only has customer_id.
+    
+    Args:
+        filter (bool): If True, only return Active projects. If False, return all projects.
+    
+    Returns DataFrame with enriched project data.
     """
     try:
-        # This query starts from dim_project and LEFT JOINs to get module data,
-        # ensuring that all 'Active' projects are included, even if they have no modules yet.
-        query = """
-        SELECT
-            p.project_id AS "projectId",
-            p.customer_name AS "customerName",
-            p.project_name AS "projectName",
-            p.project_start_date AS "projectStartDate",
-            p.project_status AS "status",
-            COUNT(DISTINCT h.module_id) as "moduleCount",
-            SUM(h.planned_hours) as "totalHours"
-        FROM dim_project p
-        LEFT JOIN fact_module_phase_hours h ON p.project_id = h.project_id
-        WHERE p.project_status = 'Active'
-        GROUP BY p.project_id, p.customer_name, p.project_name, p.project_start_date, p.project_status
-        ORDER BY p.project_start_date DESC
+        # Add WHERE clause to filter by Active status if filter=True
+        where_clause = "WHERE p.project_status = 'Active'" if filter else ""
+        
+        query = f"""
+            SELECT
+                p.project_id AS "projectId",
+                p.customer_id AS "customerId",
+                c.customer_name AS "customerName",
+                p.project_name AS "projectName",
+                p.project_start_date AS "projectStartDate",
+                p.project_status AS "status",
+                COUNT(DISTINCT h.module_id) as "moduleCount",
+                SUM(h.planned_hours) as "totalHours"
+            FROM dim_project p
+            INNER JOIN dim_customer c ON p.customer_id = c.customer_id
+            LEFT JOIN fact_module_phase_hours h ON p.project_id = h.project_id
+            {where_clause}
+            GROUP BY p.project_id, p.customer_id, c.customer_name, p.project_name, p.project_start_date, p.project_status
+            ORDER BY p.project_start_date DESC
         """
+        
         df = db_manager.execute_custom_query(query)
-
-        # SUM(NULL) results in NULL, so we replace it with 0. 
-        # COUNT(DISTINCT NULL) correctly results in 0.
+        
+        # SUM(NULL) results in NULL, so we replace it with 0
+        # COUNT(DISTINCT NULL) correctly results in 0
         df['totalHours'] = df['totalHours'].fillna(0)
-
-        # Format date for consistent JSON output.
+        
+        # Format date for consistent JSON output
         df['projectStartDate'] = pd.to_datetime(df['projectStartDate']).dt.strftime('%Y-%m-%d')
-
+        
         return df
     except Exception as e:
         app.logger.error(f"Error in get_enriched_projects: {str(e)}")
@@ -470,12 +478,118 @@ def upload_page():
 def edit_page():
     return render_template('edit.html')
 
+@app.route('/manage')
+def manage_page():
+    return render_template('manage.html')
+
 # ===== DATA API ROUTES =====
+@app.route('/api/customers', methods=['POST'])
+def add_customer():
+    customer_name = request.json.get('customerName', '').strip()
+    if not customer_name:
+        return jsonify({'success': False, 'error': 'Name required'}), 400
+    
+    if db_manager.execute_custom_query(
+        f"SELECT 1 FROM dim_customer WHERE customer_name='{customer_name}'"
+    ).shape[0] > 0:
+        return jsonify({'success': False, 'error': 'Customer exists'}), 400
+    
+    db_manager.execute_custom_command(
+        f"INSERT INTO dim_customer (customer_name) VALUES ('{customer_name}')"
+    )
+    return jsonify({'success': True})
+
+@app.route('/api/customers/<int:customer_id>', methods=['PUT'])
+def update_customer(customer_id):
+    new_name = request.json.get('customerName', '').strip()
+    if not new_name:
+        return jsonify({'success': False, 'error': 'Name required'}), 400
+    
+    if db_manager.execute_custom_query(
+        f"SELECT 1 FROM dim_customer WHERE customer_name='{new_name}' AND customer_id!={customer_id}"
+    ).shape[0] > 0:
+        return jsonify({'success': False, 'error': 'Customer exists'}), 400
+    
+    db_manager.execute_custom_command(
+        f"UPDATE dim_customer SET customer_name='{new_name}', modified_date=GETDATE() WHERE customer_id={customer_id}"
+    )
+    return jsonify({'success': True})
+
+@app.route('/api/customers/<int:customer_id>', methods=['DELETE'])
+def delete_customer(customer_id):
+    project_ids = db_manager.execute_custom_query(
+        f"SELECT project_id FROM dim_project WHERE customer_id={customer_id}"
+    )['project_id'].tolist()
+    
+    if project_ids:
+        ids = ','.join(map(str, project_ids))
+        for table in ['fact_cost_analysis_by_step', 'fact_module_phase_hours', 
+                      'fact_project_timeline', 'fact_rate_calculation']:
+            db_manager.execute_custom_command(f"DELETE FROM {table} WHERE project_id IN ({ids})")
+    
+    # Delete projects and customer (FK cascade handles this automatically if set up)
+    db_manager.execute_custom_command(f"DELETE FROM dim_customer WHERE customer_id={customer_id}")
+    return jsonify({'success': True})
+
+@app.route('/api/projects', methods=['POST'])
+def add_project():
+    """Create new project"""
+    d = request.json
+    
+    # DEBUG: Log incoming data
+    app.logger.info(f"Received data: {d}")
+    app.logger.info(f"customerId type: {type(d.get('customerId'))}, value: {d.get('customerId')}")
+    
+    # Validate customerId is an integer
+    try:
+        customer_id = int(d['customerId'])
+    except (ValueError, KeyError):
+        return jsonify({'success': False, 'error': 'Invalid customer ID'}), 400
+    
+    # Validate unique name
+    if db_manager.execute_custom_query(
+        f"SELECT 1 FROM dim_project WHERE project_name='{d['projectName']}'"
+    ).shape[0] > 0:
+        return jsonify({'success': False, 'error': 'Project name exists'}), 400
+    
+    db_manager.execute_custom_command(
+        f"INSERT INTO dim_project (customer_id, project_name, project_start_date, project_status, created_date) "
+        f"VALUES ({customer_id}, '{d['projectName']}', '{d['startDate']}', '{d['status']}', GETDATE())"
+    )
+    
+    return jsonify({'success': True})
+
+@app.route('/api/projects/<int:project_id>', methods=['PUT'])
+def update_project(project_id):
+    """Update project name/status"""
+    d = request.json
+    
+    # Validate unique name (excluding self)
+    if db_manager.execute_custom_query(
+        f"SELECT 1 FROM dim_project WHERE project_name='{d['projectName']}' AND project_id!={project_id}"
+    ).shape[0] > 0:
+        return jsonify({'success': False, 'error': 'Project name exists'}), 400
+    
+    db_manager.execute_custom_command(
+        f"UPDATE dim_project SET project_name='{d['projectName']}', project_status='{d['status']}', "
+        f"modified_date=GETDATE() WHERE project_id={project_id}"
+    )
+    return jsonify({'success': True})
+
+@app.route('/api/projects/<int:project_id>', methods=['DELETE'])
+def delete_project(project_id):
+    """Hard delete project and cascade"""
+    for table in ['fact_cost_analysis_by_step', 'fact_module_phase_hours', 
+                  'fact_project_timeline', 'fact_rate_calculation']:
+        db_manager.execute_custom_command(f"DELETE FROM {table} WHERE project_id={project_id}")
+    
+    db_manager.execute_custom_command(f"DELETE FROM dim_project WHERE project_id={project_id}")
+    return jsonify({'success': True})
 
 @app.route('/api/projects')
 def get_projects():
     """Get all active projects for the dashboard"""
-    df = get_enriched_projects()
+    df = get_enriched_projects(False)
     return jsonify(df.to_dict('records'))
 
 @app.route('/api/project/<int:project_id>')
@@ -685,25 +799,21 @@ def get_timeline_data():
 
 @app.route('/api/customers')
 def get_customers():
-    """Get distinct customer names"""
     query = """
-        SELECT DISTINCT customer_name 
-        FROM dim_project 
-        WHERE project_status = 'Active'
+        SELECT customer_id AS customerId, customer_name AS customerName
+        FROM dim_customer 
         ORDER BY customer_name
     """
     df = db_manager.execute_custom_query(query)
-    return jsonify(df['customer_name'].tolist())
+    return jsonify(df.to_dict('records'))
 
-@app.route('/api/customers/<customer_name>/projects')
-def get_customer_projects(customer_name):
+@app.route('/api/customers/<int:customer_id>/projects')
+def get_customer_projects(customer_id):
     """Get projects for a specific customer"""
     query = f"""
-        SELECT project_id AS "projectId", 
-               project_name AS "projectName"
+        SELECT project_id AS "projectId", project_name AS "projectName", project_start_date AS "projectStartDate"
         FROM dim_project 
-        WHERE customer_name = '{customer_name}' 
-        AND project_status = 'Active'
+        WHERE customer_id = {customer_id}
         ORDER BY project_name
     """
     df = db_manager.execute_custom_query(query)
@@ -843,18 +953,6 @@ def get_conflicts():
     conflicts = detect_weekly_conflicts(week)
     return jsonify(conflicts)
 
-# ===== WRITE OPERATIONS =====
-
-@app.route('/upload', methods=['POST'])
-def upload_data():
-    # (Already detailed in section 3.2)
-    pass
-
-@app.route('/api/update-project/<int:project_id>', methods=['POST'])
-def update_project_data(project_id):
-    # (Already detailed in section 3.3)
-    pass
-
 # ===== HELPER FUNCTIONS =====
 
 def transform_to_timeline_format(df):
@@ -883,13 +981,8 @@ def transform_to_timeline_format(df):
         'dateRange': calculate_date_range(df)
     }
 
-def detect_weekly_conflicts(week_number):
-    """Identify modules with >70% utilization in specific week"""
-    # Analysis logic
-    pass
-
 @app.route('/api/update-project/<int:project_id>', methods=['POST'])
-def update_project(project_id):
+def update_project_metadata(project_id):
     try:
         changes = request.json
         

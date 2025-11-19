@@ -34,27 +34,42 @@ GO
 -- ============================================================================
 -- STEP 1: CREATE DIMENSION TABLES
 -- ============================================================================
+-- 1. Customer Dimension
+CREATE TABLE dim_customer (
+    customer_id INT IDENTITY(1,1) PRIMARY KEY,
+    customer_name NVARCHAR(255) NOT NULL UNIQUE,
+    created_date DATETIME2 NOT NULL DEFAULT GETDATE(),
+    modified_date DATETIME2 NULL
+);
 
--- 1. Master Project Dimension
+CREATE INDEX idx_customer_name ON dim_customer(customer_name);
+GO
+
+-- 2. Master Project Dimension
 CREATE TABLE dim_project (
     project_id INT IDENTITY(1,1) PRIMARY KEY,
-    customer_name NVARCHAR(255) NOT NULL,
+    customer_id INT NOT NULL,
     project_name NVARCHAR(255) NOT NULL,
     project_start_date DATE NOT NULL,
     project_status NVARCHAR(50) NOT NULL DEFAULT 'Draft',
     created_date DATETIME2 DEFAULT GETDATE(),
     modified_date DATETIME2 DEFAULT GETDATE(),
     
+    -- Foreign key to customer
+    CONSTRAINT fk_project_customer FOREIGN KEY (customer_id)
+        REFERENCES dim_customer(customer_id) ON DELETE CASCADE,
+    
+    -- Constraints
     CONSTRAINT chk_project_status CHECK (project_status IN ('Draft', 'Active', 'On Hold', 'Completed', 'Cancelled'))
 );
 
-CREATE INDEX idx_customer_name ON dim_project(customer_name);
+CREATE INDEX idx_customer_id ON dim_project(customer_id);
 CREATE INDEX idx_project_name ON dim_project(project_name);
 CREATE INDEX idx_project_status ON dim_project(project_status);
 CREATE INDEX idx_project_start_date ON dim_project(project_start_date);
 GO
 
--- 2. Module Dimension (Standardized HCM Modules)
+-- 3. Module Dimension
 CREATE TABLE dim_module (
     module_id INT IDENTITY(1,1) PRIMARY KEY,
     module_code NVARCHAR(50) NOT NULL UNIQUE,
@@ -63,7 +78,6 @@ CREATE TABLE dim_module (
     standard_duration_weeks INT,
     is_active BIT NOT NULL DEFAULT 1,
     created_date DATETIME2 DEFAULT GETDATE(),
-    
     CONSTRAINT chk_module_rate_positive CHECK (default_hourly_rate IS NULL OR default_hourly_rate > 0),
     CONSTRAINT chk_module_duration_positive CHECK (standard_duration_weeks IS NULL OR standard_duration_weeks > 0)
 );
@@ -72,7 +86,7 @@ CREATE INDEX idx_module_code ON dim_module(module_code);
 CREATE INDEX idx_module_active ON dim_module(is_active);
 GO
 
--- 3. Phase Dimension (Project Lifecycle Phases)
+-- 4. Phase Dimension (Project Lifecycle Phases)
 CREATE TABLE dim_phases (
     phase_id INT IDENTITY(1,1) PRIMARY KEY,
     phase_code NVARCHAR(50) NOT NULL UNIQUE,
@@ -98,7 +112,7 @@ GO
 -- STEP 2: CREATE FACT TABLES
 -- ============================================================================
 
--- 4. Payment Milestone Cost Analysis
+-- 5. Payment Milestone Cost Analysis
 CREATE TABLE fact_cost_analysis_by_step (
     cost_analysis_id INT IDENTITY(1,1) PRIMARY KEY,
     project_id INT NOT NULL,
@@ -116,7 +130,7 @@ CREATE TABLE fact_cost_analysis_by_step (
 CREATE INDEX idx_project_cost ON fact_cost_analysis_by_step(project_id);
 GO
 
--- 5. Module-Level Rate Card & Budget
+-- 6. Module-Level Rate Card & Budget
 CREATE TABLE fact_rate_calculation (
     rate_calc_id INT IDENTITY(1,1) PRIMARY KEY,
     project_id INT NOT NULL,
@@ -139,7 +153,7 @@ CREATE INDEX idx_project_rate ON fact_rate_calculation(project_id);
 CREATE INDEX idx_module_rate ON fact_rate_calculation(module_id);
 GO
 
--- 6. Detailed Weekly Hours by Module and Phase
+-- 7. Detailed Weekly Hours by Module and Phase
 CREATE TABLE fact_module_phase_hours (
     hours_id INT IDENTITY(1,1) PRIMARY KEY,
     project_id INT NOT NULL,
@@ -169,7 +183,7 @@ CREATE INDEX idx_week_number ON fact_module_phase_hours(week_number);
 CREATE INDEX idx_module_start_date ON fact_module_phase_hours(module_start_date);
 GO
 
--- 7. Project Timeline (Phase Duration Planning)
+-- 8. Project Timeline (Phase Duration Planning)
 CREATE TABLE fact_project_timeline (
     timeline_id INT IDENTITY(1,1) PRIMARY KEY,
     project_id INT NOT NULL,
@@ -229,10 +243,10 @@ GO
 -- ============================================================================
 
 CREATE VIEW vw_module_phase_hours_calendar AS
-SELECT 
+SELECT
     h.hours_id,
     h.project_id,
-    p.customer_name,
+    c.customer_name,
     p.project_name,
     p.project_status,
     h.module_id,
@@ -250,6 +264,7 @@ SELECT
     h.created_date
 FROM fact_module_phase_hours h
 INNER JOIN dim_project p ON h.project_id = p.project_id
+INNER JOIN dim_customer c ON p.customer_id = c.customer_id
 INNER JOIN dim_module m ON h.module_id = m.module_id
 INNER JOIN dim_phases ph ON h.phase_id = ph.phase_id
 CROSS APPLY dbo.fn_GetWeekDateRange(h.module_start_date, h.week_number) wd;
@@ -289,9 +304,9 @@ GROUP BY wd.week_start_date, wd.week_end_date;
 GO
 
 CREATE VIEW vw_module_budget_summary AS
-SELECT 
+SELECT
     p.project_id,
-    p.customer_name,
+    c.customer_name,
     p.project_name,
     p.project_status,
     m.module_id,
@@ -306,10 +321,11 @@ SELECT
     cost_variance = r.total_cost - (ISNULL(SUM(h.planned_hours), 0) * r.hourly_rate)
 FROM fact_rate_calculation r
 INNER JOIN dim_project p ON r.project_id = p.project_id
+INNER JOIN dim_customer c ON p.customer_id = c.customer_id
 INNER JOIN dim_module m ON r.module_id = m.module_id
 LEFT JOIN fact_module_phase_hours h ON r.project_id = h.project_id AND r.module_id = h.module_id
-GROUP BY 
-    p.project_id, p.customer_name, p.project_name, p.project_status,
+GROUP BY
+    p.project_id, c.customer_name, p.project_name, p.project_status,
     m.module_id, m.module_code, m.module_name,
     r.budgeted_hours, r.hourly_rate, r.total_cost;
 GO

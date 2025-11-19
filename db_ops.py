@@ -1095,11 +1095,18 @@ class AzureSQLDBManager:
             with self._connection_context() as conn:
                 # 1. Project details
                 project_query = """
-                SELECT project_id, customer_name, project_name, 
-                    project_start_date, project_status, 
-                    created_date, modified_date
-                FROM dim_project
-                WHERE project_id = ?
+                    SELECT 
+                        p.project_id, 
+                        p.customer_id,
+                        c.customer_name, 
+                        p.project_name,
+                        p.project_start_date, 
+                        p.project_status,
+                        p.created_date, 
+                        p.modified_date
+                    FROM dim_project p
+                    INNER JOIN dim_customer c ON p.customer_id = c.customer_id
+                    WHERE p.project_id = ?
                 """
                 df_project = pd.read_sql(project_query, conn, params=(project_id,))
                 
@@ -2419,7 +2426,6 @@ class AzureSQLDBManager:
                 
                 self._logger.info(
                     f"Custom command executed successfully",
-                    rows_affected=rows_affected
                 )
                 
                 return rows_affected

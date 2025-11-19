@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Manage{% endblock %}
+{% block content %}
+<div class="container-fluid mt-4">
+    <ul class="nav nav-tabs">
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#customers">Customers</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#projects">Projects</a></li>
+    </ul>
+    
+    <div class="tab-content mt-3">
+        <div id="customers" class="tab-pane fade show active">
+            <input type="text" id="cSearch" class="form-control mb-3 w-50" placeholder="Search...">
+            <button class="btn btn-primary mb-3" onclick="addCustomer()">Add Customer</button>
+            <ul id="cList" class="list-group"></ul>
+        </div>
+        
+        <div id="projects" class="tab-pane fade">
+            <input type="text" id="pSearch" class="form-control mb-3 w-50" placeholder="Search...">
+            <button class="btn btn-primary mb-3" onclick="addProject()">Add Project</button>
+            <ul id="pList" class="list-group"></ul>
+        </div>
+    </div>
+</div>
+
+<!-- Customer Modal -->
+<div class="modal fade" id="cModal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h5 id="cTitle">Customer</h5></div>
+            <div class="modal-body">
+                <input type="hidden" id="cOld">
+                <input type="text" id="cName" class="form-control" placeholder="Customer Name">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" onclick="saveCustomer()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Project Modal -->
+<div class="modal fade" id="pModal">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h5 id="pTitle">Project</h5></div>
+            <div class="modal-body">
+                <input type="hidden" id="pId">
+                <input type="hidden" id="cId">
+                <select id="pCustomer" class="form-select mb-2"><option value="">Select Customer</option></select>
+                <input type="text" id="pName" class="form-control mb-2" placeholder="Project Name">
+                <input type="date" id="pDate" class="form-control mb-2">
+                <select id="pStatus" class="form-select" required>
+                    <option value="Active">Active</option>
+                    <option value="Draft">Draft</option>
+                    <option value="On Hold">On Hold</option>
+                    <option value="Completed">Completed</option>
+                    <option value="Cancelled">Cancelled</option>
+                </select>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" onclick="saveProject()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/manage.js') }}"></script>
+{% endblock %}
