@@ -245,7 +245,7 @@ def get_date_range_from_request():
     
     return start_date, end_date
 
-def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=None):
+def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=None, project_id = "all"):
     """
     Aggregate module phase hours by time period within date range.
     Returns data suitable for Chart.js line chart.
@@ -265,6 +265,21 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
 
+        app.logger.info(f"===== AGGREGATE_HOURS_BY_MODULE =====")
+        app.logger.info(f"Project ID parameter: {project_id}")
+        
+        # Build project filter clause
+        project_filter = ""
+        if project_id != 'all':
+            try:
+                project_id_int = int(project_id)
+                project_filter = f"AND project_id = {project_id_int}"
+                app.logger.info(f"Project filter clause: {project_filter}")
+            except ValueError:
+                app.logger.warning(f"Invalid project_id: {project_id}")
+        else:
+            app.logger.info("No project filter - showing all projects")
+
         app.logger.info(f"Aggregating by module {granularity}, {start_date} to {end_date}")
 
         # Build query based on granularity
@@ -279,6 +294,7 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
                 AND planned_hours IS NOT NULL
                 AND project_status = 'Active'
+                {project_filter}
                 AND module_name NOT IN ('SUMS', 'Sums', 'sums',
                     'TOTAL', 'Total', 'total',
                     'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
@@ -300,6 +316,7 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
                 AND planned_hours IS NOT NULL
                 AND project_status = 'Active'
+                {project_filter}
                 AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
                 AND UPPER(module_name) NOT LIKE '%SUM%'
                 AND UPPER(module_name) NOT LIKE '%TOTAL%'
@@ -317,6 +334,7 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
                 AND planned_hours IS NOT NULL
                 AND project_status = 'Active'
+                {project_filter}
                 AND module_name NOT IN ('SUMS', 'TOTAL', 'WEEKS EFFORT', 'WEEK EFFORT', 'SUBTOTAL')
                 AND UPPER(module_name) NOT LIKE '%SUM%'
                 AND UPPER(module_name) NOT LIKE '%TOTAL%'
@@ -413,7 +431,7 @@ def aggregate_hours_by_module(granularity='weekly', start_date=None, end_date=No
         }
 
 
-def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=None):
+def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=None, project_id="all"):
     """
     Aggregate module phase hours by project and time period within date range.
     Always returns a dictionary with labels and datasets.
@@ -433,6 +451,15 @@ def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=N
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
         
+        project_filter = ""
+        if project_id != 'all':
+            try:
+                project_id_int = int(project_id)
+                project_filter = f"AND project_id = {project_id_int}"
+                app.logger.info(f"Filtering by project_id: {project_id_int}")
+            except ValueError:
+                app.logger.warning(f"Invalid project_id: {project_id}")
+
         print(f"Aggregating by project with granularity: {granularity}, dates: {start_date} to {end_date}")
         
         # Use the calendar view with date filtering
@@ -447,6 +474,7 @@ def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=N
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
             AND planned_hours IS NOT NULL
             AND project_status = 'Active'
+            {project_filter}
             GROUP BY project_name, week_start_date, week_end_date
             ORDER BY week_start_date, project_name
             """
@@ -463,6 +491,7 @@ def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=N
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
             AND planned_hours IS NOT NULL
             AND project_status = 'Active'
+            {project_filter}
             GROUP BY project_name, FORMAT(week_start_date, 'yyyy-MM')
             ORDER BY FORMAT(week_start_date, 'yyyy-MM'), project_name
             """
@@ -479,6 +508,7 @@ def aggregate_hours_by_project(granularity='weekly', start_date=None, end_date=N
             WHERE week_start_date BETWEEN '{start_date}' AND '{end_date}'
             AND planned_hours IS NOT NULL
             AND project_status = 'Active'
+            {project_filter}
             GROUP BY project_name, CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date))
             ORDER BY CONCAT(YEAR(week_start_date), '-Q', DATEPART(QUARTER, week_start_date)), project_name
             """
@@ -841,11 +871,23 @@ def get_weekly_module_hours():
     try:
         start_date, end_date = get_date_range_from_request()
         
+        # ✓ NEW: Get project filter parameter
+        project_id = request.args.get('project_id', 'all')
+        
         # Convert to date objects if strings
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # ✓ NEW: Build project filter clause
+        project_filter = ""
+        if project_id != 'all':
+            try:
+                project_id_int = int(project_id)
+                project_filter = f"AND project_id = {project_id_int}"
+            except ValueError:
+                app.logger.warning(f"Invalid project_id: {project_id}")
         
         query = f"""
         SELECT
@@ -857,6 +899,7 @@ def get_weekly_module_hours():
         WHERE project_status = 'Active'
             AND week_start_date BETWEEN '{start_date}' AND '{end_date}'
             AND week_start_date IS NOT NULL
+            {project_filter}  -- ✓ NEW: Apply project filter
             AND module_name NOT IN ('SUMS', 'Sums', 'sums',
                 'TOTAL', 'Total', 'total',
                 'WEEKS EFFORT', 'Weeks Effort', 'weeks effort',
@@ -1160,17 +1203,22 @@ def get_module_utilization():
     try:
         granularity = request.args.get('granularity', 'weekly')
         view = request.args.get('view', 'by-project')
-        
+        project_id = request.args.get('project_id', 'all')
         # Get date range from request
         start_date, end_date = get_date_range_from_request()
         
+        app.logger.info(f"===== MODULE UTILIZATION REQUEST =====")
+        app.logger.info(f"Granularity: {granularity}")
+        app.logger.info(f"View: {view}")
+        app.logger.info(f"Project ID: {project_id}")
+        app.logger.info(f"Full request args: {dict(request.args)}")
         app.logger.info(f"Module utilization requested: granularity={granularity}, view={view}, dates={start_date} to {end_date}")
         
         # Custom aggregation based on parameters
         if view == 'by-project':
-            data = aggregate_hours_by_project(granularity, start_date, end_date)
+            data = aggregate_hours_by_project(granularity, start_date, end_date, project_id)
         else:
-            data = aggregate_hours_by_module(granularity, start_date, end_date)
+            data = aggregate_hours_by_module(granularity, start_date, end_date, project_id)
         
         # Ensure data is a dictionary (handle None case)
         if data is None:
@@ -1203,14 +1251,6 @@ def get_module_utilization():
             'datasets': [],
             'dateRange': {'startDate': '', 'endDate': ''}
         }), 500
-
-@app.route('/api/conflicts')
-def get_conflicts():
-    """Detect module utilization conflicts"""
-    week = request.args.get('week')
-    # Logic to identify high-utilization modules
-    conflicts = detect_weekly_conflicts(week)
-    return jsonify(conflicts)
 
 # ===== HELPER FUNCTIONS =====
 

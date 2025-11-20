@@ -9,6 +9,7 @@ let lineChartInstance = null;
 let weekDetailChartInstance = null;
 let allProjects = [];
 let allTimelineData = null;
+let currentProjectFilter = 'all';
 
 let currentDateRange = {
     startDate: null,
@@ -65,10 +66,16 @@ function attachEventListeners() {
         });
     });
     
-    // Project filter change
-    document.getElementById('projectFilter').addEventListener('change', (e) => {
-        filterTimelineByProject(e.target.value);
-        refreshCharts();
+    document.getElementById('projectFilter').addEventListener('change', async (e) => {
+        currentProjectFilter = e.target.value;
+        console.log('Project filter changed to:', currentProjectFilter);
+        
+        // Filter timeline visualization
+        filterTimelineByProject(currentProjectFilter);
+        
+        // ✓ NEW: Refresh charts and table with filter
+        await refreshCharts();
+        await loadWeeklyModuleTable();
     });
     
     // Date range change - UPDATED to reload all data
@@ -352,7 +359,8 @@ async function loadCharts() {
             granularity: granularity,
             view: 'by-module',  // ← ENSURE THIS IS SET
             start_date: currentDateRange.startDate,
-            end_date: currentDateRange.endDate
+            end_date: currentDateRange.endDate,
+            project_id: currentProjectFilter || 'all'
         });
         
         const moduleResponse = await fetch(`/api/module-utilization?${params}`);
@@ -657,14 +665,15 @@ function createWeekDetailChart(modules) {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-function updateDateRange() {
+async function updateDateRange() {
     currentDateRange.startDate = document.getElementById('startDate').value;
     currentDateRange.endDate = document.getElementById('endDate').value;
     
     console.log('Date range updated:', currentDateRange);
     
-    // Refresh all date-sensitive components
-    loadDashboardData();
+    // ✓ RELOAD ALL DATE-DEPENDENT COMPONENTS
+    await loadDashboardData();
+    await loadWeeklyModuleTable();  // ✓ ADD THIS LINE
 }
 
 function transformTimelineData(apiData) {
@@ -844,7 +853,8 @@ async function loadWeeklyModuleTable() {
         
         const params = new URLSearchParams({
             start_date: currentDateRange.startDate,
-            end_date: currentDateRange.endDate
+            end_date: currentDateRange.endDate,
+            project_id: currentProjectFilter || 'all'
         });
         
         const response = await fetch(`/api/weekly-module-hours?${params}`);
